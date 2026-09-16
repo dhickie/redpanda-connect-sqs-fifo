@@ -17,6 +17,7 @@ package sqs_fifo
 import (
 	"container/list"
 	"context"
+	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"sync"
 	"time"
 )
@@ -30,16 +31,16 @@ type sqsInFlightTracker struct {
 	l       *sync.Cond
 }
 
-func (t *sqsInFlightTracker) PullToRefresh(limit int) []*sqsMessageHandle {
+func (t *sqsInFlightTracker) PullToRefresh(limit int) []*models.sqsMessageHandle {
 	t.m.Lock()
 	defer t.m.Unlock()
 
-	handles := make([]*sqsMessageHandle, 0, limit)
+	handles := make([]*models.sqsMessageHandle, 0, limit)
 	now := time.Now()
 	// Pull the front of our fifo until we reach our limit or we reach elements that do not
 	// need to be refreshed
 	for e := t.fifo.Front(); e != nil && len(handles) < limit; e = t.fifo.Front() {
-		v := e.Value.(*sqsMessageHandle)
+		v := e.Value.(*models.sqsMessageHandle)
 		if v.deadline.Sub(now) > (t.timeout / 2) {
 			break
 		}
@@ -83,7 +84,7 @@ func (t *sqsInFlightTracker) Clear() {
 	t.l.Signal()
 }
 
-func (t *sqsInFlightTracker) AddNew(ctx context.Context, messages ...sqsMessage) {
+func (t *sqsInFlightTracker) AddNew(ctx context.Context, messages ...models.sqsMessage) {
 	t.m.Lock()
 	defer t.m.Unlock()
 

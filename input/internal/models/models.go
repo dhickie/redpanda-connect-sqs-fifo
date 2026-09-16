@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sqs_fifo
+package models
 
 import (
 	"time"
@@ -20,13 +20,25 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
-type sqsMessage struct {
-	types.Message
-	handle *sqsMessageHandle
+const (
+	messageGroupId string = "MessageGroupId"
+)
+
+type SqsMessage struct {
+	Msg    types.Message
+	Handle *SqsMessageHandle
 }
 
-type sqsMessageHandle struct {
-	id, receiptHandle string
-	// The timestamp of when the message expires
-	deadline time.Time
+func (msg *SqsMessage) GetGroupId() string {
+	id, ok := msg.Msg.Attributes[messageGroupId]
+	if !ok {
+		panic("Fatal: No message group ID found on message")
+	}
+
+	return id
+}
+
+type SqsMessageHandle struct {
+	Id, ReceiptHandle string
+	Deadline          time.Time // The timestamp of when the message expires
 }

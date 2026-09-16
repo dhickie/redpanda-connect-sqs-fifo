@@ -17,6 +17,7 @@ package sqs_fifo
 import (
 	"container/list"
 	"context"
+	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"errors"
 	"fmt"
 	"slices"
@@ -45,9 +46,9 @@ type awsSQSReader struct {
 	aconf aws.Config
 	sqs   sqsAPI
 
-	messagesChan     chan sqsMessage
-	ackMessagesChan  chan *sqsMessageHandle
-	nackMessagesChan chan *sqsMessageHandle
+	messagesChan     chan models.sqsMessage
+	ackMessagesChan  chan *models.sqsMessageHandle
+	nackMessagesChan chan *models.sqsMessageHandle
 	closeSignal      *shutdown.Signaller
 
 	log *service.Logger
@@ -58,9 +59,9 @@ func newAWSSQSReader(conf sqsiConfig, aconf aws.Config, log *service.Logger) (*a
 		conf:             conf,
 		aconf:            aconf,
 		log:              log,
-		messagesChan:     make(chan sqsMessage),
-		ackMessagesChan:  make(chan *sqsMessageHandle),
-		nackMessagesChan: make(chan *sqsMessageHandle),
+		messagesChan:     make(chan models.sqsMessage),
+		ackMessagesChan:  make(chan *models.sqsMessageHandle),
+		nackMessagesChan: make(chan *models.sqsMessageHandle),
 		closeSignal:      shutdown.NewSignaller(),
 	}, nil
 }
@@ -113,7 +114,7 @@ func (a *awsSQSReader) Read(ctx context.Context) (*service.Message, service.AckF
 		return nil, nil, service.ErrNotConnected
 	}
 
-	var next sqsMessage
+	var next models.sqsMessage
 	var open bool
 	select {
 	case next, open = <-a.messagesChan:
@@ -187,7 +188,7 @@ func (a *awsSQSReader) Close(ctx context.Context) error {
 	return nil
 }
 
-func (a *awsSQSReader) deleteMessages(ctx context.Context, msgs ...*sqsMessageHandle) error {
+func (a *awsSQSReader) deleteMessages(ctx context.Context, msgs ...*models.sqsMessageHandle) error {
 	if !a.conf.DeleteMessage {
 		return nil
 	}
@@ -225,14 +226,14 @@ func (a *awsSQSReader) deleteMessages(ctx context.Context, msgs ...*sqsMessageHa
 	return nil
 }
 
-func (a *awsSQSReader) resetMessages(ctx context.Context, msgs ...*sqsMessageHandle) error {
+func (a *awsSQSReader) resetMessages(ctx context.Context, msgs ...*models.sqsMessageHandle) error {
 	if !a.conf.ResetVisibility {
 		return nil
 	}
 	return a.updateVisibilityMessages(ctx, 0, msgs...)
 }
 
-func (a *awsSQSReader) updateVisibilityMessages(ctx context.Context, timeout int, msgs ...*sqsMessageHandle) error {
+func (a *awsSQSReader) updateVisibilityMessages(ctx context.Context, timeout int, msgs ...*models.sqsMessageHandle) error {
 	const maxBatchSize = 10
 	batchError := &batchUpdateVisibilityError{}
 	for len(msgs) > 0 {
@@ -278,13 +279,13 @@ func (a *awsSQSReader) ackLoop(wg *sync.WaitGroup, inFlightTracker *sqsInFlightT
 	closeNowCtx, done := a.closeSignal.HardStopCtx(context.Background())
 	defer done()
 
-	flushFinishedHandles := func(handles []*sqsMessageHandle, erase bool) {
+	flushFinishedHandles := func(handles []*models.sqsMessageHandle, erase bool) {
 		if len(handles) == 0 {
 			return
 		}
 		seen := make(map[string]bool, len(handles))
 		// deduplicate handles, unlikely that there are duplicates, so this is defensive.
-		handles = slices.DeleteFunc(handles, func(h *sqsMessageHandle) bool {
+		handles = slices.DeleteFunc(handles, func(h *models.sqsMessageHandle) bool {
 			if seen[h.id] {
 				return true
 			}
@@ -310,8 +311,8 @@ func (a *awsSQSReader) ackLoop(wg *sync.WaitGroup, inFlightTracker *sqsInFlightT
 	flushTimer := time.NewTicker(time.Second)
 	defer flushTimer.Stop()
 
-	pendingAcks := []*sqsMessageHandle{}
-	pendingNacks := []*sqsMessageHandle{}
+	pendingAcks := []*models.sqsMessageHandle{}
+	pendingNacks := []*models.sqsMessageHandle{}
 
 ackLoop:
 	for {
@@ -394,10 +395,10 @@ func (a *awsSQSReader) refreshLoop(wg *sync.WaitGroup, inFlightTracker *sqsInFli
 func (a *awsSQSReader) readLoop(wg *sync.WaitGroup, inFlightTracker *sqsInFlightTracker) {
 	defer wg.Done()
 
-	var pendingMsgs []sqsMessage
+	var pendingMsgs []models.sqsMessage
 	defer func() {
 		if len(pendingMsgs) > 0 {
-			tmpNacks := make([]*sqsMessageHandle, 0, len(pendingMsgs))
+			tmpNacks := make([]*models.sqsMessageHandle, 0, len(pendingMsgs))
 			for _, m := range pendingMsgs {
 				if m.handle == nil {
 					continue
@@ -437,15 +438,15 @@ func (a *awsSQSReader) readLoop(wg *sync.WaitGroup, inFlightTracker *sqsInFlight
 		}
 		if len(res.Messages) > 0 {
 			for _, msg := range res.Messages {
-				var handle *sqsMessageHandle
+				var handle *models.sqsMessageHandle
 				if msg.MessageId != nil && msg.ReceiptHandle != nil {
-					handle = &sqsMessageHandle{
+					handle = &models.sqsMessageHandle{
 						id:            *msg.MessageId,
 						receiptHandle: *msg.ReceiptHandle,
 						deadline:      time.Now().Add(a.conf.MessageTimeout),
 					}
 				}
-				pendingMsgs = append(pendingMsgs, sqsMessage{
+				pendingMsgs = append(pendingMsgs, models.sqsMessage{
 					Message: msg,
 					handle:  handle,
 				})

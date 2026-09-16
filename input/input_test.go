@@ -16,6 +16,7 @@ package sqs_fifo
 
 import (
 	"context"
+	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"fmt"
 	"slices"
 	"sync"
@@ -169,7 +170,7 @@ func TestSQSInput(t *testing.T) {
 	err = r.Connect(tCtx)
 	require.NoError(t, err)
 
-	receivedMessages := make([]sqsMessage, 0, expectedMessages)
+	receivedMessages := make([]models.sqsMessage, 0, expectedMessages)
 
 	// Check that all messages are received from the reader
 	require.Eventually(t, func() bool {
