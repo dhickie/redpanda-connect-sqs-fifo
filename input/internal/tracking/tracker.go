@@ -6,6 +6,7 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"slices"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,7 @@ type MessageTracker struct {
 	refreshMap   map[string]*list.Element       // Map of message IDs to elements in the refresh queue
 	conf         *models.InputConfig            // The configuration for the input
 	sqs          *aws.SqsClient                 // The SQS client
+	m            *sync.RWMutex                  // The mutex used to provide thread safety
 }
 
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
@@ -39,6 +41,9 @@ func (t *MessageTracker) Start() {
 
 // Add adds a collection of messages to the tracker
 func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
+	t.m.Lock()
+	defer t.m.Unlock()
+
 	// Group the messages by message group ID
 	tempMap := make(map[string][]*models.SqsMessage)
 	for _, msg := range msgs {
@@ -73,6 +78,9 @@ func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
 
 // Peek gets a message by its ID without flushing or acknowledging it
 func (t *MessageTracker) Peek(id *string) (*models.SqsMessage, error) {
+	t.m.RLock()
+	defer t.m.RUnlock()
+
 	msg, ok := t.idMap[id]
 	if !ok {
 		// TODO return error type
@@ -83,6 +91,9 @@ func (t *MessageTracker) Peek(id *string) (*models.SqsMessage, error) {
 
 // Flush returns the next message to be sent downstream and removes it from the pending messages list
 func (t *MessageTracker) Flush() *models.SqsMessage {
+	t.m.Lock()
+	defer t.m.Unlock()
+
 	// TODO deal with case where no messages are available yet
 	msg := t.pendingFlush[0]
 	t.pendingFlush = t.pendingFlush[1:]
@@ -91,6 +102,9 @@ func (t *MessageTracker) Flush() *models.SqsMessage {
 
 // Ack acknowledges that a message has been processed and deleted from the SQS queue
 func (t *MessageTracker) Ack(id *string) {
+	t.m.Lock()
+	defer t.m.Unlock()
+
 	msg, ok := t.idMap[id]
 	if !ok {
 		panic("Fatal: Ack called for unknown message")
@@ -120,6 +134,9 @@ func (t *MessageTracker) Ack(id *string) {
 
 // Length returns how many messages are currently in the message tracker awaiting flushing or acknowledgment
 func (t *MessageTracker) Length() int {
+	t.m.RLock()
+	defer t.m.RUnlock()
+
 	i := 0
 	for _, v := range t.groups {
 		i += v.len()
@@ -134,24 +151,31 @@ func (t *MessageTracker) refreshLoop() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Build the list of messages which currently need refreshing
-		refList := make([]*models.SqsMessage, 0)
-		for element := t.refreshQueue.Front(); element != nil; element = t.refreshQueue.Front() {
-			msg := element.Value.(*models.SqsMessage)
-			if msg.RemainingDeadline() < t.conf.VisibilityTimeout/2 {
-				refList = append(refList, msg)
-				t.refreshQueue.MoveToBack(element) // Keep the refresh queue in order
-			} else {
-				break
-			}
-		}
+		t.refresh()
+	}
+}
 
-		// Chunk into groups of 10 max
-		for chunk := range slices.Chunk(refList, 10) {
-			err := t.sqs.SetMessageVisibility(context.TODO(), int32(t.conf.VisibilityTimeout.Seconds()), chunk...)
-			if err != nil {
-				// TODO log a warning here
-			}
+func (t *MessageTracker) refresh() {
+	t.m.Lock()
+	defer t.m.Unlock()
+
+	// Build the list of messages which currently need refreshing
+	refList := make([]*models.SqsMessage, 0)
+	for element := t.refreshQueue.Front(); element != nil; element = t.refreshQueue.Front() {
+		msg := element.Value.(*models.SqsMessage)
+		if msg.RemainingDeadline() < t.conf.VisibilityTimeout/2 {
+			refList = append(refList, msg)
+			t.refreshQueue.MoveToBack(element) // Keep the refresh queue in order
+		} else {
+			break
+		}
+	}
+
+	// Chunk into groups of 10 max
+	for chunk := range slices.Chunk(refList, 10) {
+		err := t.sqs.SetMessageVisibility(context.TODO(), int32(t.conf.VisibilityTimeout.Seconds()), chunk...)
+		if err != nil {
+			// TODO log a warning here
 		}
 	}
 }

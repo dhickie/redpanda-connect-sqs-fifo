@@ -2,7 +2,6 @@ package tracking
 
 import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
-	"sync"
 )
 
 // Tracks the current processing status of a message group that must be processed sequentially
@@ -10,7 +9,6 @@ import (
 type groupTracker struct {
 	queue    []*models.SqsMessage // The queue of pending messages for this group
 	inFlight bool                 // Whether the message at the front of the queue is currently in flight
-	m        sync.Mutex           // For thread safety
 }
 
 // Create a new empty group tracker for a group of messages that share a message group ID
@@ -18,16 +16,12 @@ func newGroupTracker() *groupTracker {
 	return &groupTracker{
 		queue:    make([]*models.SqsMessage, 0),
 		inFlight: false,
-		m:        sync.Mutex{},
 	}
 }
 
 // Add a collection of messages to the group tracker.
 // If the group doesn't currently have an inflight message, it returns the next message and marks the group as in flight
 func (t *groupTracker) add(msgs []*models.SqsMessage) *models.SqsMessage {
-	t.m.Lock()
-	defer t.m.Unlock()
-
 	t.queue = append(t.queue, msgs...)
 
 	if !t.inFlight {
@@ -40,9 +34,6 @@ func (t *groupTracker) add(msgs []*models.SqsMessage) *models.SqsMessage {
 
 // Deletes the message at the front of the queue, and returns the next message if there is one ready
 func (t *groupTracker) delete() (*models.SqsMessage, error) {
-	t.m.Lock()
-	defer t.m.Unlock()
-
 	if !t.inFlight {
 		// TODO return error type
 	}
@@ -59,8 +50,5 @@ func (t *groupTracker) delete() (*models.SqsMessage, error) {
 
 // Returns how many messages are currently in flight for this message group
 func (t *groupTracker) len() int {
-	t.m.Lock()
-	defer t.m.Unlock()
-
 	return len(t.queue)
 }
