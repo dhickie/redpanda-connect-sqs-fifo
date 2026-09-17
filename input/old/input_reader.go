@@ -12,11 +12,12 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sqs_fifo
+package old
 
 import (
 	"container/list"
 	"context"
+	"dhickie/redpanda-connect-sqs-fifo/input"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"errors"
 	"fmt"
@@ -41,7 +42,7 @@ type sqsAPI interface {
 }
 
 type awsSQSReader struct {
-	conf sqsiConfig
+	conf sqs_fifo.sqsiConfig
 
 	aconf aws.Config
 	sqs   sqsAPI
@@ -54,7 +55,7 @@ type awsSQSReader struct {
 	log *service.Logger
 }
 
-func newAWSSQSReader(conf sqsiConfig, aconf aws.Config, log *service.Logger) (*awsSQSReader, error) {
+func newAWSSQSReader(conf sqs_fifo.sqsiConfig, aconf aws.Config, log *service.Logger) (*awsSQSReader, error) {
 	return &awsSQSReader{
 		conf:             conf,
 		aconf:            aconf,
@@ -132,7 +133,7 @@ func (a *awsSQSReader) Read(ctx context.Context) (*service.Message, service.AckF
 	}
 
 	msg := service.NewMessage([]byte(*next.Body))
-	addSQSMetadata(msg, next.Message)
+	sqs_fifo.addSQSMetadata(msg, next.Message)
 	mHandle := next.handle
 	return msg, func(rctx context.Context, res error) error {
 		if mHandle == nil {

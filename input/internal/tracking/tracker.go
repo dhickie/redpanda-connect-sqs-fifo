@@ -119,8 +119,8 @@ func (t *MessageTracker) Ack(id *string) {
 }
 
 // Length returns how many messages are currently in the message tracker awaiting flushing or acknowledgment
-func (t *MessageTracker) Length() int32 {
-	i := int32(0)
+func (t *MessageTracker) Length() int {
+	i := 0
 	for _, v := range t.groups {
 		i += v.len()
 	}

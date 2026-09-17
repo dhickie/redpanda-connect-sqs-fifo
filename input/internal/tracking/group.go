@@ -58,9 +58,9 @@ func (t *groupTracker) delete() (*models.SqsMessage, error) {
 }
 
 // Returns how many messages are currently in flight for this message group
-func (t *groupTracker) len() int32 {
+func (t *groupTracker) len() int {
 	t.m.Lock()
 	defer t.m.Unlock()
 
-	return int32(len(t.queue))
+	return len(t.queue)
 }

@@ -12,10 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package sqs_fifo
+package old
 
 import (
 	"context"
+	"dhickie/redpanda-connect-sqs-fifo/input"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"fmt"
 	"slices"
@@ -144,7 +145,7 @@ func TestSQSInput(t *testing.T) {
 	require.NoError(t, err)
 
 	r, err := newAWSSQSReader(
-		sqsiConfig{
+		sqs_fifo.sqsiConfig{
 			URL:                 "http://foo.example.com",
 			WaitTimeSeconds:     0,
 			DeleteMessage:       true,
@@ -235,7 +236,7 @@ func TestSQSInputBatchAck(t *testing.T) {
 	require.NoError(t, err)
 
 	r, err := newAWSSQSReader(
-		sqsiConfig{
+		sqs_fifo.sqsiConfig{
 			URL:                 "http://foo.example.com",
 			WaitTimeSeconds:     0,
 			DeleteMessage:       true,
