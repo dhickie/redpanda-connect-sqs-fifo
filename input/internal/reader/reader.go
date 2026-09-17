@@ -13,10 +13,10 @@ type SqsFifoReader struct {
 	client     *aws.SqsClient           // A client for the SQS API
 	tracker    *tracking.MessageTracker // Tracks all in-flight messages
 	pendingAck []*string                // Messages that have been acknowledged by the runtime but not yet deleted
-	conf       models.InputConfig       // The configuration for the input
+	conf       *models.InputConfig      // The configuration for the input
 }
 
-func NewSqsFifoReader(conf models.InputConfig) *SqsFifoReader {
+func NewSqsFifoReader(conf *models.InputConfig) *SqsFifoReader {
 	client := &aws.SqsClient{}
 	return &SqsFifoReader{
 		client:     client,

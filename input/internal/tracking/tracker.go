@@ -16,12 +16,12 @@ type MessageTracker struct {
 	pendingFlush []*models.SqsMessage           // Messages pending a flush downstream
 	refreshQueue *list.List                     // A time ordered list of all in-flight messages by their visibility expiry
 	refreshMap   map[string]*list.Element       // Map of message IDs to elements in the refresh queue
-	conf         models.InputConfig             // The configuration for the input
+	conf         *models.InputConfig            // The configuration for the input
 	sqs          *aws.SqsClient                 // The SQS client
 }
 
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
-func NewMessageTracker(conf models.InputConfig, sqs *aws.SqsClient) *MessageTracker {
+func NewMessageTracker(conf *models.InputConfig, sqs *aws.SqsClient) *MessageTracker {
 	return &MessageTracker{
 		groups:       make(map[string]*groupTracker),
 		idMap:        make(map[*string]*models.SqsMessage),
