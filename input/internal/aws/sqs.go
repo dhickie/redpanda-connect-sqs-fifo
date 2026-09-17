@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
+	"strconv"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -110,4 +111,27 @@ func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessag
 
 	// TODO check for failed batch members
 	return nil
+}
+
+// GetQueueVisibilityTimeout gets the infrastructure configured visibility timeout for the configured queue
+func (c *SqsClient) GetQueueVisibilityTimeout(ctx context.Context) (int32, error) {
+	req := sqs.GetQueueAttributesInput{
+		QueueUrl: &c.conf.QueueUrl,
+		AttributeNames: []types.QueueAttributeName{
+			types.QueueAttributeNameVisibilityTimeout,
+		},
+	}
+
+	res, err := c.client.GetQueueAttributes(ctx, &req)
+	if err != nil {
+		return 0, err
+	}
+
+	attr := res.Attributes[string(types.QueueAttributeNameVisibilityTimeout)]
+	i, err := strconv.ParseInt(attr, 10, 32)
+	if err != nil {
+		return 0, err
+	}
+
+	return int32(i), nil
 }

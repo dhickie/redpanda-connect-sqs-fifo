@@ -11,27 +11,30 @@ import (
 
 // MessageTracker tracks all messages that have been received from SQS but haven't yet been deleted from the queue
 type MessageTracker struct {
-	groups       map[string]*groupTracker      // Messages split by message group ID
-	idMap        map[string]*models.SqsMessage // Map of message IDs to messages
-	pendingFlush []*models.SqsMessage          // Messages pending a flush downstream
-	pendingAck   []*models.SqsMessage          // Messages pending acknowledgement (and deletion from the queue)
-	refreshQueue *list.List                    // A time ordered list of all in-flight messages by their visibility expiry
-	refreshMap   map[string]*list.Element      // Map of message IDs to elements in the refresh queue
-	conf         models.InputConfig            // The configuration for the input
-	sqs          *aws.SqsClient                // The SQS client
+	groups       map[string]*groupTracker       // Messages split by message group ID
+	idMap        map[*string]*models.SqsMessage // Map of message IDs to messages
+	pendingFlush []*models.SqsMessage           // Messages pending a flush downstream
+	refreshQueue *list.List                     // A time ordered list of all in-flight messages by their visibility expiry
+	refreshMap   map[string]*list.Element       // Map of message IDs to elements in the refresh queue
+	conf         models.InputConfig             // The configuration for the input
+	sqs          *aws.SqsClient                 // The SQS client
 }
 
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
 func NewMessageTracker(conf models.InputConfig, sqs *aws.SqsClient) *MessageTracker {
 	return &MessageTracker{
 		groups:       make(map[string]*groupTracker),
-		idMap:        make(map[string]*models.SqsMessage),
+		idMap:        make(map[*string]*models.SqsMessage),
 		pendingFlush: make([]*models.SqsMessage, 0),
-		pendingAck:   make([]*models.SqsMessage, 0),
 		refreshQueue: list.New(),
 		conf:         conf,
 		sqs:          sqs,
 	}
+}
+
+// Start starts the message tracker by starting the visibility refresh loop
+func (t *MessageTracker) Start() {
+	go t.refreshLoop()
 }
 
 // Add adds a collection of messages to the tracker
@@ -49,7 +52,7 @@ func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
 		tempMap[mgid] = append(tempMap[mgid], msg)
 
 		// Add to the relevant maps/lists to support later processes
-		t.idMap[*msg.Msg.MessageId] = msg
+		t.idMap[msg.Msg.MessageId] = msg
 		e := t.refreshQueue.PushBack(msg)
 		t.refreshMap[*msg.Msg.MessageId] = e
 	}
@@ -69,7 +72,7 @@ func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
 }
 
 // Peek gets a message by its ID without flushing or acknowledging it
-func (t *MessageTracker) Peek(id string) (*models.SqsMessage, error) {
+func (t *MessageTracker) Peek(id *string) (*models.SqsMessage, error) {
 	msg, ok := t.idMap[id]
 	if !ok {
 		// TODO return error type
@@ -83,12 +86,11 @@ func (t *MessageTracker) Flush() *models.SqsMessage {
 	// TODO deal with case where no messages are available yet
 	msg := t.pendingFlush[0]
 	t.pendingFlush = t.pendingFlush[1:]
-	t.pendingAck = append(t.pendingAck, msg)
 	return msg
 }
 
 // Ack acknowledges that a message has been processed and deleted from the SQS queue
-func (t *MessageTracker) Ack(id string) {
+func (t *MessageTracker) Ack(id *string) {
 	msg, ok := t.idMap[id]
 	if !ok {
 		panic("Fatal: Ack called for unknown message")
@@ -114,6 +116,16 @@ func (t *MessageTracker) Ack(id string) {
 	e := t.refreshMap[*msg.Msg.MessageId]
 	delete(t.refreshMap, *msg.Msg.MessageId)
 	t.refreshQueue.Remove(e)
+}
+
+// Length returns how many messages are currently in the message tracker awaiting flushing or acknowledgment
+func (t *MessageTracker) Length() int32 {
+	i := int32(0)
+	for _, v := range t.groups {
+		i += v.len()
+	}
+
+	return i
 }
 
 // refreshLoop checks for any messages requiring a refresh of their visibility timeout
