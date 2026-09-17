@@ -2,27 +2,39 @@ package tracking
 
 import (
 	"container/list"
+	"context"
+	"dhickie/redpanda-connect-sqs-fifo/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
+	"slices"
+	"time"
 )
 
+// MessageTracker tracks all messages that have been received from SQS but haven't yet been deleted from the queue
 type MessageTracker struct {
 	groups       map[string]*groupTracker      // Messages split by message group ID
 	idMap        map[string]*models.SqsMessage // Map of message IDs to messages
 	pendingFlush []*models.SqsMessage          // Messages pending a flush downstream
 	pendingAck   []*models.SqsMessage          // Messages pending acknowledgement (and deletion from the queue)
 	refreshQueue *list.List                    // A time ordered list of all in-flight messages by their visibility expiry
+	refreshMap   map[string]*list.Element      // Map of message IDs to elements in the refresh queue
+	conf         models.InputConfig            // The configuration for the input
+	sqs          *aws.SqsClient                // The SQS client
 }
 
-func NewMessageTracker() *MessageTracker {
+// NewMessageTracker returns a new message tracker using the provided configuration and SQS client
+func NewMessageTracker(conf models.InputConfig, sqs *aws.SqsClient) *MessageTracker {
 	return &MessageTracker{
 		groups:       make(map[string]*groupTracker),
 		idMap:        make(map[string]*models.SqsMessage),
 		pendingFlush: make([]*models.SqsMessage, 0),
 		pendingAck:   make([]*models.SqsMessage, 0),
 		refreshQueue: list.New(),
+		conf:         conf,
+		sqs:          sqs,
 	}
 }
 
+// Add adds a collection of messages to the tracker
 func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
 	// Group the messages by message group ID
 	tempMap := make(map[string][]*models.SqsMessage)
@@ -35,7 +47,11 @@ func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
 		}
 
 		tempMap[mgid] = append(tempMap[mgid], msg)
+
+		// Add to the relevant maps/lists to support later processes
 		t.idMap[*msg.Msg.MessageId] = msg
+		e := t.refreshQueue.PushBack(msg)
+		t.refreshMap[*msg.Msg.MessageId] = e
 	}
 
 	// Add them to their respective groups, and add to the pending flush list if there's a new message ready to pass
@@ -93,6 +109,37 @@ func (t *MessageTracker) Ack(id string) {
 		delete(t.groups, gId)
 	}
 
-	// Clean up the message ID map
+	// Clean up the message ID map and refresh queue
 	delete(t.idMap, id)
+	e := t.refreshMap[*msg.Msg.MessageId]
+	delete(t.refreshMap, *msg.Msg.MessageId)
+	t.refreshQueue.Remove(e)
+}
+
+// refreshLoop checks for any messages requiring a refresh of their visibility timeout
+func (t *MessageTracker) refreshLoop() {
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		// Build the list of messages which currently need refreshing
+		refList := make([]*models.SqsMessage, 0)
+		for element := t.refreshQueue.Front(); element != nil; element = t.refreshQueue.Front() {
+			msg := element.Value.(*models.SqsMessage)
+			if msg.RemainingDeadline() < t.conf.VisibilityTimeout/2 {
+				refList = append(refList, msg)
+				t.refreshQueue.MoveToBack(element) // Keep the refresh queue in order
+			} else {
+				break
+			}
+		}
+
+		// Chunk into groups of 10 max
+		for chunk := range slices.Chunk(refList, 10) {
+			err := t.sqs.SetMessageVisibility(context.TODO(), int32(t.conf.VisibilityTimeout.Seconds()), chunk...)
+			if err != nil {
+				// TODO log a warning here
+			}
+		}
+	}
 }

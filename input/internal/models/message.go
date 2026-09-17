@@ -25,8 +25,8 @@ const (
 )
 
 type SqsMessage struct {
-	Msg    types.Message
-	Handle *SqsMessageHandle
+	Msg      types.Message // The actual SQS message
+	Deadline time.Time     // The deadline after which the message will be visible to other clients
 }
 
 func (msg *SqsMessage) GetGroupId() string {
@@ -38,7 +38,6 @@ func (msg *SqsMessage) GetGroupId() string {
 	return id
 }
 
-type SqsMessageHandle struct {
-	Id, ReceiptHandle string
-	Deadline          time.Time // The timestamp of when the message expires
+func (msg *SqsMessage) RemainingDeadline() time.Duration {
+	return msg.Deadline.Sub(time.Now())
 }
