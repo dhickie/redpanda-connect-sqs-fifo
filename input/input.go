@@ -8,7 +8,16 @@ import (
 	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
-// TODO implement thread safety
+const (
+	metaKeyMsgId         = "sqs_message_id"
+	metaKeyReceiptHandle = "sqs_receipt_handle"
+	metaKeyReceiveCount  = "sqs_approximate_receive_count"
+	metaKeyGroupId       = "sqs_message_group_id"
+
+	attKeyReceiveCount = "ApproximateReceiveCount"
+	attKeyGroupId      = "MessageGroupId"
+)
+
 // SqsFifoInput is the top level object that interacts with the Connect SDK
 type SqsFifoInput struct {
 	reader  *reader.SqsFifoReader
@@ -76,22 +85,27 @@ func (i *SqsFifoInput) callbackLoop() {
 		select {
 		case mId := <-i.ackChan:
 			i.reader.Ack(mId)
+			// TODO add nack channel
 		}
 	}
 }
 
 func addSQSMetadata(sMsg *service.Message, sqsMsg *models.SqsMessage) {
-	sMsg.MetaSetMut("sqs_message_id", *sqsMsg.Msg.MessageId)
-	sMsg.MetaSetMut("sqs_receipt_handle", *sqsMsg.Msg.ReceiptHandle)
-	// TODO add FIFO message attributes
+	sMsg.MetaSetMut(metaKeyMsgId, *sqsMsg.Msg.MessageId)
+	sMsg.MetaSetMut(metaKeyReceiptHandle, *sqsMsg.Msg.ReceiptHandle)
 
-	if count, ok := sqsMsg.Msg.Attributes["ApproximateReceiveCount"]; ok {
-		sMsg.MetaSetMut("sqs_approximate_receive_count", count)
-	}
+	addAttributeMetadataIfNotNil(sMsg, metaKeyReceiveCount, attKeyReceiveCount, sqsMsg.Msg.Attributes)
+	addAttributeMetadataIfNotNil(sMsg, metaKeyGroupId, attKeyGroupId, sqsMsg.Msg.Attributes)
 
 	for k, v := range sqsMsg.Msg.MessageAttributes {
 		if v.StringValue != nil {
 			sMsg.MetaSetMut(k, *v.StringValue)
 		}
+	}
+}
+
+func addAttributeMetadataIfNotNil(msg *service.Message, mKey string, aKey string, attributes map[string]string) {
+	if v, ok := attributes[aKey]; ok {
+		msg.MetaSetMut(mKey, v)
 	}
 }

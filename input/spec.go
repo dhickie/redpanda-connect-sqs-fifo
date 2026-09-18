@@ -59,8 +59,10 @@ func sqsFifoInputSpec() *service.ConfigSpec {
 		- sqs_message_id
 		- sqs_receipt_handle
 		- sqs_approximate_receive_count
-		- TODO Add details of FIFO specific attributes
+		- sqs_message_group_id
 		- All message attributes
+
+        The message group ID can be used to guarantee message ordering on an output that partitions events, such as Kafka.
 		
 		You can access these metadata fields using
 		xref:configuration:interpolation.adoc#bloblang-queries[function interpolation].`).
