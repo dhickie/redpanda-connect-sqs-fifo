@@ -20,15 +20,17 @@ const (
 
 // SqsFifoInput is the top level object that interacts with the Connect SDK
 type SqsFifoInput struct {
-	reader  *reader.SqsFifoReader
-	ackChan chan *string
+	reader   *reader.SqsFifoReader
+	ackChan  chan *string
+	nackChan chan *string
 }
 
 // NewSqsFifoInput returns a new input object, ready for connecting to SQS
 func NewSqsFifoInput(conf *models.InputConfig) *SqsFifoInput {
 	return &SqsFifoInput{
-		reader:  reader.NewSqsFifoReader(conf),
-		ackChan: make(chan *string),
+		reader:   reader.NewSqsFifoReader(conf),
+		ackChan:  make(chan *string),
+		nackChan: make(chan *string),
 	}
 }
 
@@ -60,14 +62,19 @@ func (i *SqsFifoInput) Read(ctx context.Context) (*service.Message, service.AckF
 
 	ackFunc := func(pCtx context.Context, err error) error {
 		if err != nil {
-			// TODO handle nack
+			select {
+			case <-pCtx.Done():
+				return pCtx.Err()
+			case i.nackChan <- sqsMsg.Msg.MessageId:
+			}
+		} else {
+			select {
+			case <-pCtx.Done():
+				return pCtx.Err()
+			case i.ackChan <- sqsMsg.Msg.MessageId:
+			}
 		}
 
-		select {
-		case <-pCtx.Done():
-			return pCtx.Err()
-		case i.ackChan <- sqsMsg.Msg.MessageId:
-		}
 		return nil
 	}
 
@@ -80,16 +87,19 @@ func (i *SqsFifoInput) Close(ctx context.Context) error {
 	return nil
 }
 
+// Processes Acks and Nacks from the pipeline and hands them over to their respective processing loops
 func (i *SqsFifoInput) callbackLoop() {
 	for {
 		select {
 		case mId := <-i.ackChan:
 			i.reader.Ack(mId)
-			// TODO add nack channel
+		case mId := <-i.nackChan:
+			i.reader.Nack(mId)
 		}
 	}
 }
 
+// Adds SQS metadata to the outgoing Connect message for later parts of the pipeline
 func addSQSMetadata(sMsg *service.Message, sqsMsg *models.SqsMessage) {
 	sMsg.MetaSetMut(metaKeyMsgId, *sqsMsg.Msg.MessageId)
 	sMsg.MetaSetMut(metaKeyReceiptHandle, *sqsMsg.Msg.ReceiptHandle)
@@ -104,6 +114,7 @@ func addSQSMetadata(sMsg *service.Message, sqsMsg *models.SqsMessage) {
 	}
 }
 
+// Adds an SQS attribute (not to be confused with message attributes) to the connect message if it exists
 func addAttributeMetadataIfNotNil(msg *service.Message, mKey string, aKey string, attributes map[string]string) {
 	if v, ok := attributes[aKey]; ok {
 		msg.MetaSetMut(mKey, v)

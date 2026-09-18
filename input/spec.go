@@ -2,18 +2,18 @@ package sqs_fifo
 
 import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
-	"time"
 
 	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
 // Input configuration fields
 const (
-	confFieldUrl                 = "url"
-	confFieldVisibilityTimeout   = "visibility_timeout"
-	confFieldMinReceiveBatchSize = "min_receive_batch_size"
-	confFieldMaxReceiveBatchSize = "max_receive_batch_size"
-	confFieldMaxInFlightMessages = "max_in_flight_messages"
+	confFieldUrl                   = "url"
+	confFieldVisibilityTimeout     = "visibility_timeout"
+	confFieldMinReceiveBatchSize   = "min_receive_batch_size"
+	confFieldMaxReceiveBatchSize   = "max_receive_batch_size"
+	confFieldMaxInFlightMessages   = "max_in_flight_messages"
+	confFieldMaxProcessingAttempts = "max_processing_attempts"
 )
 
 func inputConfigFromConnectConfig(cConfig *service.ParsedConfig) (*models.InputConfig, error) {
@@ -21,6 +21,9 @@ func inputConfigFromConnectConfig(cConfig *service.ParsedConfig) (*models.InputC
 	var err error
 
 	if conf.QueueUrl, err = cConfig.FieldString(confFieldUrl); err != nil {
+		return nil, err
+	}
+	if conf.VisibilityTimeout, err = cConfig.FieldInt(confFieldVisibilityTimeout); err != nil {
 		return nil, err
 	}
 	if conf.MinReceiveBatchSize, err = cConfig.FieldInt(confFieldMinReceiveBatchSize); err != nil {
@@ -32,12 +35,9 @@ func inputConfigFromConnectConfig(cConfig *service.ParsedConfig) (*models.InputC
 	if conf.MaxInFlightMessages, err = cConfig.FieldInt(confFieldMaxInFlightMessages); err != nil {
 		return nil, err
 	}
-
-	t, err := cConfig.FieldInt(confFieldVisibilityTimeout)
-	if err != nil {
+	if conf.MaxProcessingAttempts, err = cConfig.FieldInt(confFieldMaxProcessingAttempts); err != nil {
 		return nil, err
 	}
-	conf.VisibilityTimeout = time.Duration(t) * time.Second
 
 	return conf, nil
 }
@@ -88,6 +88,11 @@ func sqsFifoInputSpec() *service.ConfigSpec {
 				Description("The maximum number of messages that can be in-flight concurrently. A message is considered in-flight as soon as it is received from the queue and has not yet been deleted.").
 				ShortDescription("The maximum number of messages that can be in-flight concurrently.").
 				Default(30).
+				Advanced(),
+			service.NewIntField(confFieldMaxProcessingAttempts).
+				Description("The maximum number of times processing of a message will be attempted before returning it to the queue. If this limit is reached and processing of a message is abandoned, then all in-flight messages for that group ID will be returned to the queue. Setting this to a high value will delay the message going to any configured deadletter queue, as well as the message being picked up by a different application instance. Setting this to a low value can lead to messages going to a deadletter queue prematurely, especially if message group IDs are coarsely grained. A value of 0 will retry failed messages indefinitely.").
+				ShortDescription("The maximum number of times processing of a message will be attempted before returning it to the queue.").
+				Default(3).
 				Advanced(),
 		)
 }

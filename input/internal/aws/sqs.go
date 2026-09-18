@@ -4,7 +4,6 @@ import (
 	"context"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"strconv"
-	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -61,10 +60,10 @@ func (c *SqsClient) SetMessageVisibility(ctx context.Context, newTimeoutSeconds 
 }
 
 // ReceiveMessages pulls a batch of messages from the queue
-func (c *SqsClient) ReceiveMessages(ctx context.Context, maxMsgs int32) ([]*models.SqsMessage, error) {
+func (c *SqsClient) ReceiveMessages(ctx context.Context, maxMsgs int) ([]*models.SqsMessage, error) {
 	req := sqs.ReceiveMessageInput{
 		QueueUrl:            &c.conf.QueueUrl,
-		MaxNumberOfMessages: maxMsgs,
+		MaxNumberOfMessages: int32(maxMsgs),
 	}
 
 	res, err := c.client.ReceiveMessage(ctx, &req)
@@ -74,10 +73,7 @@ func (c *SqsClient) ReceiveMessages(ctx context.Context, maxMsgs int32) ([]*mode
 
 	msgs := make([]*models.SqsMessage, len(res.Messages))
 	for i, rawMsg := range res.Messages {
-		msgs[i] = &models.SqsMessage{
-			Msg:      rawMsg,
-			Deadline: time.Now().Add(c.conf.VisibilityTimeout),
-		}
+		msgs[i] = models.NewSqsMessage(rawMsg, c.conf.VisibilityTimeoutSeconds)
 	}
 
 	return msgs, nil

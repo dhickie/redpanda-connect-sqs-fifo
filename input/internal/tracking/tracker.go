@@ -107,7 +107,7 @@ func (t *MessageTracker) Ack(id *string) {
 
 	msg, ok := t.idMap[id]
 	if !ok {
-		panic("Fatal: Ack called for unknown message")
+		panic("Fatal: Ack called for unknown message") // TODO maybe just log error instead?
 	}
 
 	// Delete the message from the front of its group
@@ -126,10 +126,61 @@ func (t *MessageTracker) Ack(id *string) {
 	}
 
 	// Clean up the message ID map and refresh queue
-	delete(t.idMap, id)
-	e := t.refreshMap[*msg.Msg.MessageId]
-	delete(t.refreshMap, *msg.Msg.MessageId)
-	t.refreshQueue.Remove(e)
+	t.cleanupMessages(msg)
+}
+
+// Nack acknowledges that messages have failed to be processed correctly,
+// and either need to be retried or returned to the queue.
+// Returns a collection of messages which are being abandoned.
+func (t *MessageTracker) Nack(ids ...*string) {
+	t.m.Lock()
+	defer t.m.Unlock()
+
+	noRetry := make([]*models.SqsMessage, 0, len(ids))
+	for _, id := range ids {
+		msg, ok := t.idMap[id]
+		if !ok {
+			panic("Fatal: Nack called for unknown message") // TODO maybe just log error instead?
+		}
+
+		// Increment the attempt counter
+		msg.AttemptNo++
+
+		// Retry - add it back to the end of pendingFlush
+		if t.conf.MaxProcessingAttempts == 0 || t.conf.MaxProcessingAttempts <= msg.AttemptNo {
+			t.pendingFlush = append(t.pendingFlush, msg)
+			continue
+		}
+
+		// Abandon
+		noRetry = append(noRetry, msg)
+	}
+
+	// For abandoned messages, abandon all messages in the group - we can't process them without breaking ordering
+	abandon := make([]*models.SqsMessage, 0, len(noRetry))
+	for _, msg := range noRetry {
+		groupId := msg.GetGroupId()
+		group, ok := t.groups[groupId]
+		if !ok {
+			panic("Fatal: Unable to find group for message") // TODO maybe just log error instead?
+		}
+
+		abandon = append(abandon, group.queue...)
+
+		// Clean up id maps/lists and delete the group - this is OK to do here as we are inside the lock
+		t.cleanupMessages(group.queue...)
+		delete(t.groups, groupId)
+	}
+
+	// Batch abandoned messages
+	batches := slices.Chunk(abandon, 10)
+	for batch := range batches {
+		// Reset message visibility to make it available again
+		err := t.sqs.SetMessageVisibility(context.TODO(), 0, batch...)
+		if err != nil {
+			// TODO handle partial batch failures - log a warning
+		}
+	}
 }
 
 // Length returns how many messages are currently in the message tracker awaiting flushing or acknowledgment
@@ -143,6 +194,17 @@ func (t *MessageTracker) Length() int {
 	}
 
 	return i
+}
+
+// Cleans up the tracking list/map when we no longer care about a message
+func (t *MessageTracker) cleanupMessages(msgs ...*models.SqsMessage) {
+	for _, msg := range msgs {
+		id := msg.Msg.MessageId
+		delete(t.idMap, id)
+		e := t.refreshMap[*id]
+		delete(t.refreshMap, *id)
+		t.refreshQueue.Remove(e)
+	}
 }
 
 // refreshLoop checks for any messages requiring a refresh of their visibility timeout
@@ -163,8 +225,9 @@ func (t *MessageTracker) refresh() {
 	refList := make([]*models.SqsMessage, 0)
 	for element := t.refreshQueue.Front(); element != nil; element = t.refreshQueue.Front() {
 		msg := element.Value.(*models.SqsMessage)
-		if msg.RemainingDeadline() < t.conf.VisibilityTimeout/2 {
+		if msg.RemainingDeadline() < t.conf.VisibilityTimeoutSeconds/2 {
 			refList = append(refList, msg)
+			// TODO don't move to back until refresh has been successful
 			t.refreshQueue.MoveToBack(element) // Keep the refresh queue in order
 		} else {
 			break
@@ -172,10 +235,14 @@ func (t *MessageTracker) refresh() {
 	}
 
 	// Chunk into groups of 10 max
-	for chunk := range slices.Chunk(refList, 10) {
-		err := t.sqs.SetMessageVisibility(context.TODO(), int32(t.conf.VisibilityTimeout.Seconds()), chunk...)
+	for batch := range slices.Chunk(refList, 10) {
+		err := t.sqs.SetMessageVisibility(context.TODO(), int32(t.conf.VisibilityTimeoutSeconds), batch...)
 		if err != nil {
 			// TODO log a warning here
+		}
+
+		for _, msg := range batch {
+			msg.RefreshDeadline(int(t.conf.VisibilityTimeoutSeconds))
 		}
 	}
 }
