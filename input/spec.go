@@ -23,7 +23,7 @@ func inputConfigFromConnectConfig(cConfig *service.ParsedConfig) (*models.InputC
 	if conf.QueueUrl, err = cConfig.FieldString(confFieldUrl); err != nil {
 		return nil, err
 	}
-	if conf.VisibilityTimeout, err = cConfig.FieldInt(confFieldVisibilityTimeout); err != nil {
+	if conf.VisibilityTimeoutSeconds, err = cConfig.FieldInt(confFieldVisibilityTimeout); err != nil {
 		return nil, err
 	}
 	if conf.MinReceiveBatchSize, err = cConfig.FieldInt(confFieldMinReceiveBatchSize); err != nil {

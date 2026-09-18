@@ -6,6 +6,7 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/tracking"
+	"sync"
 	"time"
 )
 
@@ -15,6 +16,8 @@ type SqsFifoReader struct {
 	pendingAck  *list.List               // Messages that have been acknowledged by the runtime but not yet deleted
 	pendingNack *list.List               // Messages that have had a negative acknowledgement by the runtime but not yet processed
 	conf        *models.InputConfig      // The configuration for the input
+	ackLock     *sync.Mutex              // A lock for protecting the collection of pending acks
+	nackLock    *sync.Mutex              // A lock for protecting the collection of pending nacks
 }
 
 // TODO add max capacity to all slices where possible
@@ -26,6 +29,8 @@ func NewSqsFifoReader(conf *models.InputConfig) *SqsFifoReader {
 		pendingAck:  list.New(),
 		pendingNack: list.New(),
 		conf:        conf,
+		ackLock:     &sync.Mutex{},
+		nackLock:    &sync.Mutex{},
 	}
 }
 
@@ -51,11 +56,17 @@ func (r *SqsFifoReader) Next() *models.SqsMessage {
 
 // Ack acknowledges a message and adds it to the list of pending acknowledgements
 func (r *SqsFifoReader) Ack(id *string) {
+	r.ackLock.Lock()
+	defer r.ackLock.Unlock()
+
 	r.pendingAck.PushBack(id)
 }
 
 // Nack acknowledges a message has failed processing and adds it to the list of pending failed acknowledgements
 func (r *SqsFifoReader) Nack(id *string) {
+	r.nackLock.Lock()
+	defer r.nackLock.Unlock()
+
 	r.pendingNack.PushBack(id)
 }
 
@@ -82,6 +93,8 @@ func (r *SqsFifoReader) readLoop() {
 func (r *SqsFifoReader) ackLoop() {
 	t := time.NewTicker(time.Second)
 	for range t.C {
+		r.ackLock.Lock()
+
 		batch := make([]*models.SqsMessage, 0, 10)
 		for e := r.pendingAck.Front(); e != nil; e = e.Next() {
 			msg, err := r.tracker.Peek(e.Value.(*string))
@@ -105,13 +118,19 @@ func (r *SqsFifoReader) ackLoop() {
 				clear(batch)
 			}
 		}
+
+		// Clear the pending list
+		r.pendingAck = r.pendingAck.Init()
+
+		r.ackLock.Unlock()
 	}
 }
 
-// TODO add thread safety around pending collections
 func (r *SqsFifoReader) nackLoop() {
 	t := time.NewTicker(time.Second)
 	for range t.C {
+		r.nackLock.Lock()
+
 		ids := make([]*string, 0, r.pendingNack.Len())
 		for e := r.pendingNack.Front(); e != nil; e = e.Next() {
 			id := e.Value.(*string)
@@ -126,5 +145,10 @@ func (r *SqsFifoReader) nackLoop() {
 			ids = append(ids, id)
 			r.tracker.Nack(ids...)
 		}
+
+		// Clear the pending list
+		r.pendingNack = r.pendingNack.Init()
+
+		r.nackLock.Unlock()
 	}
 }
