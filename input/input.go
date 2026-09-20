@@ -41,7 +41,7 @@ func NewSqsFifoInput(conf *models.InputConfig) *SqsFifoInput {
 
 // ConnectionTest tests that the input can reach the target queue successfully by running a health check
 func (i *SqsFifoInput) ConnectionTest(ctx context.Context) service.ConnectionTestResults {
-	err := i.reader.Healthcheck(ctx) // TODO pass in ctx here
+	err := i.reader.Healthcheck(ctx)
 	if err != nil {
 		return service.ConnectionTestFailed(err).AsList()
 	}
@@ -62,7 +62,7 @@ func (i *SqsFifoInput) Connect(context.Context) error {
 // Read gets the next message to be processed by the pipeline, and a callback function to call once it has been
 // fully processed
 func (i *SqsFifoInput) Read(ctx context.Context) (*service.Message, service.AckFunc, error) {
-	sqsMsg := i.reader.Next(ctx)
+	sqsMsg := i.reader.Next()
 
 	sMsg := service.NewMessage([]byte(*sqsMsg.Msg.Body))
 	addSQSMetadata(sMsg, sqsMsg)

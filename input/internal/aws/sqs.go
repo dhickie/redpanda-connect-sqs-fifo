@@ -34,7 +34,7 @@ func (c *SqsClient) SetMessageVisibility(ctx context.Context, newTimeoutSeconds 
 	}
 
 	if len(msgs) > maxBatchSize {
-		// TODO return an error
+		return newBatchSizeError(len(msgs), "SetMessageVisibility")
 	}
 
 	req := sqs.ChangeMessageVisibilityBatchInput{
@@ -85,7 +85,7 @@ func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessag
 	}
 
 	if len(msgs) > maxBatchSize {
-		// TODO return an error here
+		return newBatchSizeError(len(msgs), "DeleteMessages")
 	}
 
 	req := sqs.DeleteMessageBatchInput{

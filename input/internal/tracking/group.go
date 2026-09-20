@@ -35,7 +35,7 @@ func (t *groupTracker) add(msgs []*models.SqsMessage) *models.SqsMessage {
 // Deletes the message at the front of the queue, and returns the next message if there is one ready
 func (t *groupTracker) delete() (*models.SqsMessage, error) {
 	if !t.inFlight {
-		// TODO return error type
+		return nil, newTrackingError("group", "Cannot delete message for group that doesn't have an in-flight message")
 	}
 
 	t.queue = t.queue[1:]

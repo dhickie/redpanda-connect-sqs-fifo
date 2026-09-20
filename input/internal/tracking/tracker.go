@@ -6,6 +6,7 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
+	"errors"
 	"slices"
 	"sync"
 	"time"
@@ -88,7 +89,7 @@ func (t *MessageTracker) Peek(id *string) (*models.SqsMessage, error) {
 
 	msg, ok := t.idMap[id]
 	if !ok {
-		// TODO return error type
+		return nil, errors.New("Peek: Cannot find message with id " + *id)
 	}
 
 	return msg, nil
