@@ -6,6 +6,7 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/tracking"
+	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
 	"sync"
 	"time"
 )
@@ -18,26 +19,28 @@ type SqsFifoReader struct {
 	conf        *models.InputConfig      // The configuration for the input
 	ackLock     *sync.Mutex              // A lock for protecting the collection of pending acks
 	nackLock    *sync.Mutex              // A lock for protecting the collection of pending nacks
+	lt          *util.Lifetime           // Manages application lifetime and shutdown events
 }
 
 // TODO add max capacity to all slices where possible
-func NewSqsFifoReader(conf *models.InputConfig) *SqsFifoReader {
+func NewSqsFifoReader(conf *models.InputConfig, lt *util.Lifetime) *SqsFifoReader {
 	client := &aws.SqsClient{}
 	return &SqsFifoReader{
 		client:      client,
-		tracker:     tracking.NewMessageTracker(conf, client),
+		tracker:     tracking.NewMessageTracker(conf, client, lt),
 		pendingAck:  list.New(),
 		pendingNack: list.New(),
 		conf:        conf,
 		ackLock:     &sync.Mutex{},
 		nackLock:    &sync.Mutex{},
+		lt:          lt,
 	}
 }
 
 // Healthcheck checks whether the reader can successfully connect to the target queue.
 // Returns nil if the connection was successful
-func (r *SqsFifoReader) Healthcheck() error {
-	_, err := r.client.GetQueueVisibilityTimeout(context.TODO())
+func (r *SqsFifoReader) Healthcheck(ctx context.Context) error {
+	_, err := r.client.GetQueueVisibilityTimeout(ctx)
 	return err
 }
 
@@ -45,8 +48,9 @@ func (r *SqsFifoReader) Healthcheck() error {
 func (r *SqsFifoReader) Start() {
 	r.tracker.Start()
 
-	go r.readLoop()
-	go r.ackLoop()
+	wg := r.lt.Register(2)
+	wg.Go(r.readLoop)
+	wg.Go(r.ackLoop)
 }
 
 // Next returns the next message available for processing
@@ -55,100 +59,146 @@ func (r *SqsFifoReader) Next() *models.SqsMessage {
 }
 
 // Ack acknowledges a message and adds it to the list of pending acknowledgements
-func (r *SqsFifoReader) Ack(id *string) {
+func (r *SqsFifoReader) Ack(id *string) error {
 	r.ackLock.Lock()
 	defer r.ackLock.Unlock()
 
 	r.pendingAck.PushBack(id)
+	return nil
 }
 
 // Nack acknowledges a message has failed processing and adds it to the list of pending failed acknowledgements
-func (r *SqsFifoReader) Nack(id *string) {
+func (r *SqsFifoReader) Nack(id *string) error {
 	r.nackLock.Lock()
 	defer r.nackLock.Unlock()
 
 	r.pendingNack.PushBack(id)
+	return nil
 }
 
 // Reads messages from the queue if there's room in the buffer
 func (r *SqsFifoReader) readLoop() {
 	// TODO replace ticker with cond
 	t := time.NewTicker(time.Second)
-	for range t.C {
-		// Only pull more messages if there's capacity in the tracker
-		capacity := r.conf.MaxInFlightMessages - r.tracker.Length()
-		if capacity >= r.conf.MinReceiveBatchSize {
-			msgs, err := r.client.ReceiveMessages(context.TODO(), capacity)
-			if err != nil {
-				// TODO log an error here
-				continue
-			}
+	defer t.Stop()
 
-			r.tracker.Add(msgs)
+readLoop:
+	for {
+		select {
+		case <-r.lt.Terminated():
+			break readLoop
+		case <-r.lt.Killed():
+			break readLoop
+		case <-t.C:
+			r.read(r.lt.Ctx)
 		}
+	}
+}
+
+func (r *SqsFifoReader) read(ctx context.Context) {
+	// Only pull more messages if there's capacity in the tracker
+	capacity := r.conf.MaxInFlightMessages - r.tracker.Length()
+	if capacity >= r.conf.MinReceiveBatchSize {
+		msgs, err := r.client.ReceiveMessages(ctx, capacity)
+		if err != nil {
+			// TODO log an error here
+			return
+		}
+
+		r.tracker.Add(msgs)
 	}
 }
 
 // Acknowledges pending messages by deleting them from the queue and removing them from the tracker
 func (r *SqsFifoReader) ackLoop() {
 	t := time.NewTicker(time.Second)
+	defer t.Stop()
+
+ackLoop:
 	for range t.C {
-		r.ackLock.Lock()
+		// Give the application as long as possible to process any pending acknowledgements
+		if err := r.ack(r.lt.Ctx); err != nil {
+			break ackLoop
+		}
+	}
+}
 
-		batch := make([]*models.SqsMessage, 0, 10)
-		for e := r.pendingAck.Front(); e != nil; e = e.Next() {
-			msg, err := r.tracker.Peek(e.Value.(*string))
-			if err != nil {
-				// TODO log an error here
-				continue
-			}
+func (r *SqsFifoReader) ack(ctx context.Context) error {
+	r.ackLock.Lock()
+	defer r.ackLock.Unlock()
 
-			batch = append(batch, msg)
-			if len(batch) == 10 || e.Next() == nil {
-				err := r.client.DeleteMessages(context.TODO(), batch)
-				if err != nil {
-					// TODO log an error here
-					// TODO deal with failed batch members
-				}
-
-				for _, bMsg := range batch {
-					r.tracker.Ack(bMsg.Msg.MessageId)
-				}
-
-				clear(batch)
-			}
+	batch := make([]*models.SqsMessage, 0, 10)
+	for e := r.pendingAck.Front(); e != nil; e = e.Next() {
+		msg, err := r.tracker.Peek(e.Value.(*string))
+		if err != nil {
+			// TODO log an error here
+			return nil
 		}
 
-		// Clear the pending list
-		r.pendingAck = r.pendingAck.Init()
+		batch = append(batch, msg)
+		if len(batch) == 10 || e.Next() == nil {
+			err := r.client.DeleteMessages(ctx, batch)
+			if err != nil {
+				// TODO log an error here
+				// TODO deal with failed batch members
+				if ctxErr := ctx.Err(); ctxErr != nil {
+					return ctxErr
+				}
+			}
 
-		r.ackLock.Unlock()
+			for _, bMsg := range batch {
+				r.tracker.Ack(bMsg.Msg.MessageId)
+			}
+
+			clear(batch)
+		}
 	}
+
+	// Clear the pending list
+	r.pendingAck = r.pendingAck.Init()
+	return nil
 }
 
 func (r *SqsFifoReader) nackLoop() {
 	t := time.NewTicker(time.Second)
+nackLoop:
 	for range t.C {
-		r.nackLock.Lock()
+		if err := r.nack(r.lt.Ctx); err != nil {
+			break nackLoop
+		}
+	}
+}
 
-		ids := make([]*string, 0, r.pendingNack.Len())
-		for e := r.pendingNack.Front(); e != nil; e = e.Next() {
-			id := e.Value.(*string)
-			_, err := r.tracker.Peek(id)
-			if err != nil {
-				// TODO log an error here
-				continue
+func (r *SqsFifoReader) nack(ctx context.Context) error {
+	r.nackLock.Lock()
+	defer r.nackLock.Unlock()
+
+	ids := make([]*string, 0, r.pendingNack.Len())
+	for e := r.pendingNack.Front(); e != nil; e = e.Next() {
+		id := e.Value.(*string)
+		if _, err := r.tracker.Peek(id); err != nil {
+			if ctxErr := r.lt.Ctx.Err(); ctxErr != nil {
+				return err
 			}
 
-			// We don't batch here for Nacks because the tracker will need to batch again anyway when resetting
-			// message visibility for additional messages in the group
-			ids = append(ids, id)
-			r.tracker.Nack(ids...)
+			// TODO log an error here
+			return nil
 		}
 
-		// Clear the pending list
-		r.pendingNack = r.pendingNack.Init()
+		// We don't batch here for Nacks because the tracker will need to batch again anyway when resetting
+		// message visibility for additional messages in the group
+		ids = append(ids, id)
+		err := r.tracker.Nack(ctx, ids...)
+		if err != nil {
+			if ctxErr := r.lt.Ctx.Err(); ctxErr != nil {
+				return err
+			}
 
-		r.nackLock.Unlock()
+			// TODO log an error here - maybe panic? We don't know how to recover from this
+		}
 	}
+
+	// Clear the pending list
+	r.pendingNack = r.pendingNack.Init()
+	return nil
 }

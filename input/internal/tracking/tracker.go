@@ -5,6 +5,7 @@ import (
 	"context"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
+	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
 	"slices"
 	"sync"
 	"time"
@@ -20,10 +21,11 @@ type MessageTracker struct {
 	conf         *models.InputConfig            // The configuration for the input
 	sqs          *aws.SqsClient                 // The SQS client
 	m            *sync.RWMutex                  // The mutex used to provide thread safety
+	lt           *util.Lifetime                 // Manages application lifetime and shutdown events
 }
 
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
-func NewMessageTracker(conf *models.InputConfig, sqs *aws.SqsClient) *MessageTracker {
+func NewMessageTracker(conf *models.InputConfig, sqs *aws.SqsClient, lt *util.Lifetime) *MessageTracker {
 	return &MessageTracker{
 		groups:       make(map[string]*groupTracker),
 		idMap:        make(map[*string]*models.SqsMessage),
@@ -31,12 +33,15 @@ func NewMessageTracker(conf *models.InputConfig, sqs *aws.SqsClient) *MessageTra
 		refreshQueue: list.New(),
 		conf:         conf,
 		sqs:          sqs,
+		m:            &sync.RWMutex{},
+		lt:           lt,
 	}
 }
 
 // Start starts the message tracker by starting the visibility refresh loop
 func (t *MessageTracker) Start() {
-	go t.refreshLoop()
+	wg := t.lt.Register(1)
+	wg.Go(t.refreshLoop)
 }
 
 // Add adds a collection of messages to the tracker
@@ -132,7 +137,7 @@ func (t *MessageTracker) Ack(id *string) {
 // Nack acknowledges that messages have failed to be processed correctly,
 // and either need to be retried or returned to the queue.
 // Returns a collection of messages which are being abandoned.
-func (t *MessageTracker) Nack(ids ...*string) {
+func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 	t.m.Lock()
 	defer t.m.Unlock()
 
@@ -176,11 +181,17 @@ func (t *MessageTracker) Nack(ids ...*string) {
 	batches := slices.Chunk(abandon, 10)
 	for batch := range batches {
 		// Reset message visibility to make it available again
-		err := t.sqs.SetMessageVisibility(context.TODO(), 0, batch...)
+		err := t.sqs.SetMessageVisibility(ctx, 0, batch...)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return ctxErr
+			}
+
 			// TODO handle partial batch failures - log a warning
 		}
 	}
+
+	return nil
 }
 
 // Length returns how many messages are currently in the message tracker awaiting flushing or acknowledgment
@@ -212,12 +223,21 @@ func (t *MessageTracker) refreshLoop() {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		t.refresh()
+refreshLoop:
+	for {
+		select {
+		case <-t.lt.Terminated():
+			t.resetVisibility(t.lt.Ctx)
+			break refreshLoop
+		case <-t.lt.Killed():
+			break refreshLoop
+		case <-ticker.C:
+			t.refreshVisibility(t.lt.Ctx)
+		}
 	}
 }
 
-func (t *MessageTracker) refresh() {
+func (t *MessageTracker) refreshVisibility(ctx context.Context) {
 	t.m.Lock()
 	defer t.m.Unlock()
 
@@ -236,13 +256,42 @@ func (t *MessageTracker) refresh() {
 
 	// Chunk into groups of 10 max
 	for batch := range slices.Chunk(refList, 10) {
-		err := t.sqs.SetMessageVisibility(context.TODO(), int32(t.conf.VisibilityTimeoutSeconds), batch...)
+		err := t.sqs.SetMessageVisibility(ctx, int32(t.conf.VisibilityTimeoutSeconds), batch...)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return
+			}
+
 			// TODO log a warning here
 		}
 
 		for _, msg := range batch {
-			msg.RefreshDeadline(int(t.conf.VisibilityTimeoutSeconds))
+			msg.RefreshDeadline(t.conf.VisibilityTimeoutSeconds)
+		}
+	}
+}
+
+// Resets the visibility of all messages to zero to allow other applications to pick them up as quickly as possible
+func (t *MessageTracker) resetVisibility(ctx context.Context) {
+	t.m.Lock()
+	defer t.m.Unlock()
+
+	msgs := make([]*models.SqsMessage, 0, t.conf.MaxInFlightMessages)
+	for _, g := range t.groups {
+		for _, msg := range g.queue {
+			msgs = append(msgs, msg)
+		}
+	}
+
+	// Batch to 10 max
+	batches := slices.Chunk(msgs, 10)
+	for batch := range batches {
+		if err := t.sqs.SetMessageVisibility(ctx, 0, batch...); err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return
+			}
+
+			// TODO log an error here
 		}
 	}
 }
