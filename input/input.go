@@ -26,16 +26,18 @@ type SqsFifoInput struct {
 	ackChan  chan *string          // Channel used to indicate a message has been processed successfully.
 	nackChan chan *string          // Channel used to indicate a message has not been processed successfully.
 	lt       *util.Lifetime        // Used to manage the lt of child goroutines
+	logger   *service.Logger       // Used to write custom logs
 }
 
 // NewSqsFifoInput returns a new input object, ready for connecting to SQS
-func NewSqsFifoInput(conf *models.InputConfig) *SqsFifoInput {
+func NewSqsFifoInput(conf *models.InputConfig, logger *service.Logger) *SqsFifoInput {
 	lf := util.NewLifetime()
 	return &SqsFifoInput{
-		reader:   reader.NewSqsFifoReader(conf, lf),
+		reader:   reader.NewSqsFifoReader(conf, lf, logger),
 		ackChan:  make(chan *string),
 		nackChan: make(chan *string),
 		lt:       lf,
+		logger:   logger,
 	}
 }
 
@@ -55,6 +57,7 @@ func (i *SqsFifoInput) Connect(context.Context) error {
 
 	wg := i.lt.Register(1)
 	wg.Go(i.callbackLoop)
+	i.logger.Debug("Ack callback loop started")
 
 	return nil
 }
@@ -63,6 +66,7 @@ func (i *SqsFifoInput) Connect(context.Context) error {
 // fully processed
 func (i *SqsFifoInput) Read(ctx context.Context) (*service.Message, service.AckFunc, error) {
 	sqsMsg := i.reader.Next()
+	i.logger.Debugf("Retrieved message ID %v from input", sqsMsg.Msg.MessageId)
 
 	sMsg := service.NewMessage([]byte(*sqsMsg.Msg.Body))
 	addSQSMetadata(sMsg, sqsMsg)
@@ -91,33 +95,44 @@ func (i *SqsFifoInput) Read(ctx context.Context) (*service.Message, service.AckF
 // Close closes the connection to the SQS queue, shutting down gracefully if possible
 func (i *SqsFifoInput) Close(ctx context.Context) error {
 	i.lt.Terminate()
+	i.logger.Debug("Received close call - beginning graceful termination")
 
 	if d, ok := ctx.Deadline(); ok {
 		// Give as long as we can to terminate gracefully
+		i.logger.Debugf("Termination deadline set as %v", d)
+
 		ttl := time.Until(d)
 		select {
 		case <-ctx.Done():
+			i.logger.Debug("Graceful termination cancelled before completion")
 			return ctx.Err()
 		case <-time.After(ttl - time.Second):
+			i.logger.Debug("Termination deadline expired - issuing kill order")
 			i.lt.Kill()
 		case <-i.lt.Stopped():
+			i.logger.Debug("Graceful termination completed successfully")
 			return nil
 		}
 
 		select {
 		case <-ctx.Done():
+			i.logger.Debug("Hard termination cancelled before completion")
 			return ctx.Err()
 		case <-i.lt.Stopped():
+			i.logger.Debug("Hard termination completed successfully")
 			return nil
 		}
 	}
 
 	// Just kill immediately
+	i.logger.Debug("No termination deadline set - issuing kill order")
 	i.lt.Kill()
 	select {
 	case <-ctx.Done():
+		i.logger.Debug("Hard termination cancelled before completion")
 		return ctx.Err()
 	case <-i.lt.Stopped():
+		i.logger.Debug("Hard termination completed successfully")
 		return nil
 	}
 }
@@ -128,8 +143,10 @@ loop:
 	for {
 		select {
 		case mId := <-i.ackChan:
+			i.logger.Debugf("Input received Ack for message ID %v", *mId)
 			i.reader.Ack(mId)
 		case mId := <-i.nackChan:
+			i.logger.Debugf("Input received Nack for message ID %v", *mId)
 			i.reader.Nack(mId)
 		case <-i.lt.Terminated():
 			break loop

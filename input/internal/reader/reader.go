@@ -9,6 +9,8 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
 	"sync"
 	"time"
+
+	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
 type SqsFifoReader struct {
@@ -20,20 +22,22 @@ type SqsFifoReader struct {
 	ackLock     *sync.Mutex              // A lock for protecting the collection of pending acks
 	nackLock    *sync.Mutex              // A lock for protecting the collection of pending nacks
 	lt          *util.Lifetime           // Manages application lifetime and shutdown events
+	logger      *service.Logger          // For writing custom logs
 }
 
 // TODO add max capacity to all slices where possible
-func NewSqsFifoReader(conf *models.InputConfig, lt *util.Lifetime) *SqsFifoReader {
+func NewSqsFifoReader(conf *models.InputConfig, lt *util.Lifetime, logger *service.Logger) *SqsFifoReader {
 	client := &aws.SqsClient{}
 	return &SqsFifoReader{
 		client:      client,
-		tracker:     tracking.NewMessageTracker(conf, client, lt),
+		tracker:     tracking.NewMessageTracker(conf, client, lt, logger),
 		pendingAck:  list.New(),
 		pendingNack: list.New(),
 		conf:        conf,
 		ackLock:     &sync.Mutex{},
 		nackLock:    &sync.Mutex{},
 		lt:          lt,
+		logger:      logger,
 	}
 }
 
@@ -51,6 +55,7 @@ func (r *SqsFifoReader) Start() {
 	wg := r.lt.Register(2)
 	wg.Go(r.readLoop)
 	wg.Go(r.ackLoop)
+	r.logger.Debug("Read and ack loops started")
 }
 
 // Next returns the next message available for processing
@@ -59,21 +64,19 @@ func (r *SqsFifoReader) Next() *models.SqsMessage {
 }
 
 // Ack acknowledges a message and adds it to the list of pending acknowledgements
-func (r *SqsFifoReader) Ack(id *string) error {
+func (r *SqsFifoReader) Ack(id *string) {
 	r.ackLock.Lock()
 	defer r.ackLock.Unlock()
 
 	r.pendingAck.PushBack(id)
-	return nil
 }
 
 // Nack acknowledges a message has failed processing and adds it to the list of pending failed acknowledgements
-func (r *SqsFifoReader) Nack(id *string) error {
+func (r *SqsFifoReader) Nack(id *string) {
 	r.nackLock.Lock()
 	defer r.nackLock.Unlock()
 
 	r.pendingNack.PushBack(id)
-	return nil
 }
 
 // Reads messages from the queue if there's room in the buffer
@@ -86,8 +89,10 @@ readLoop:
 	for {
 		select {
 		case <-r.lt.Terminated():
+			r.logger.Debug("Read loop received graceful termination order - breaking loop")
 			break readLoop
 		case <-r.lt.Killed():
+			r.logger.Debug("Read loop received kill order - breaking loop")
 			break readLoop
 		case <-t.C:
 			r.read(r.lt.Ctx)
@@ -101,10 +106,11 @@ func (r *SqsFifoReader) read(ctx context.Context) {
 	if capacity >= r.conf.MinReceiveBatchSize {
 		msgs, err := r.client.ReceiveMessages(ctx, capacity)
 		if err != nil {
-			// TODO log an error here
+			r.logger.Errorf("Failed to receive messages from queue: %v", err.Error())
 			return
 		}
 
+		r.logger.Debugf("Received %d messages from queue", len(msgs))
 		r.tracker.Add(msgs)
 	}
 }
@@ -118,6 +124,7 @@ ackLoop:
 	for range t.C {
 		// Give the application as long as possible to process any pending acknowledgements
 		if err := r.ack(r.lt.Ctx); err != nil {
+			r.logger.Debug("Ack loop received kill order - breaking loop")
 			break ackLoop
 		}
 	}
@@ -127,11 +134,13 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 	r.ackLock.Lock()
 	defer r.ackLock.Unlock()
 
+	r.logger.Debugf("Ack loop found %v acks to process", r.pendingAck.Len())
+
 	batch := make([]*models.SqsMessage, 0, 10)
 	for e := r.pendingAck.Front(); e != nil; e = e.Next() {
 		msg, err := r.tracker.Peek(e.Value.(*string))
 		if err != nil {
-			// TODO log an error here
+			r.logger.Errorf("Failed to get message details during ack: %v", err.Error())
 			return nil
 		}
 
@@ -139,11 +148,12 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 		if len(batch) == 10 || e.Next() == nil {
 			err := r.client.DeleteMessages(ctx, batch)
 			if err != nil {
-				// TODO log an error here
 				// TODO deal with failed batch members
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return ctxErr
 				}
+
+				r.logger.Errorf("Failed to delete messages during ack: %v", err.Error())
 			}
 
 			for _, bMsg := range batch {
@@ -173,6 +183,8 @@ func (r *SqsFifoReader) nack(ctx context.Context) error {
 	r.nackLock.Lock()
 	defer r.nackLock.Unlock()
 
+	r.logger.Debugf("Nack loop found %v nacks to process", r.pendingNack.Len())
+
 	ids := make([]*string, 0, r.pendingNack.Len())
 	for e := r.pendingNack.Front(); e != nil; e = e.Next() {
 		id := e.Value.(*string)
@@ -181,7 +193,7 @@ func (r *SqsFifoReader) nack(ctx context.Context) error {
 				return err
 			}
 
-			// TODO log an error here
+			r.logger.Errorf("Failed to get message details during nack: %v", err.Error())
 			return nil
 		}
 
@@ -194,7 +206,8 @@ func (r *SqsFifoReader) nack(ctx context.Context) error {
 				return err
 			}
 
-			// TODO log an error here - maybe panic? We don't know how to recover from this
+			// This can't happen - Nack only returns an error if the context is cancelled, so just panic if this happens
+			panic("Nack failed with an unknown error: " + err.Error())
 		}
 	}
 

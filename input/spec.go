@@ -108,7 +108,6 @@ func init() {
 				return nil, err
 			}
 
-			// TODO inject logger to input (mgr.Logger())
-			return NewSqsFifoInput(iConf), nil
+			return NewSqsFifoInput(iConf, mgr.Logger()), nil
 		})
 }

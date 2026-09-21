@@ -4,6 +4,7 @@ import (
 	"context"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"strconv"
+	"uuid"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -27,14 +28,18 @@ func NewSqsClient(conf models.InputConfig) (*SqsClient, error) {
 	}, nil
 }
 
-// SetMessageVisibility updates the visibility of between 1 and 10 messages to a time in the future
-func (c *SqsClient) SetMessageVisibility(ctx context.Context, newTimeoutSeconds int32, msgs ...*models.SqsMessage) error {
+// SetMessageVisibility updates the visibility of between 1 and 10 messages to a time in the future.
+// Returns a slice containing any message IDs which didn't have their visibility timeouts updated successfully.
+func (c *SqsClient) SetMessageVisibility(
+	ctx context.Context,
+	newTimeoutSeconds int32,
+	msgs ...*models.SqsMessage) ([]*BatchItemFailure, error) {
 	if len(msgs) == 0 {
-		return nil
+		return []*BatchItemFailure{}, nil
 	}
 
 	if len(msgs) > maxBatchSize {
-		return newBatchSizeError(len(msgs), "SetMessageVisibility")
+		return nil, newBatchSizeError(len(msgs), "SetMessageVisibility")
 	}
 
 	req := sqs.ChangeMessageVisibilityBatchInput{
@@ -50,13 +55,22 @@ func (c *SqsClient) SetMessageVisibility(ctx context.Context, newTimeoutSeconds 
 		req.Entries = append(req.Entries, entry)
 	}
 
-	_, err := c.client.ChangeMessageVisibilityBatch(ctx, &req)
+	res, err := c.client.ChangeMessageVisibilityBatch(ctx, &req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// TODO check to see if any bits of the batch failed
-	return nil
+	if len(res.Failed) == 0 { // All successful
+		return []*BatchItemFailure{}, nil
+	}
+
+	f := make([]*BatchItemFailure, len(res.Failed))
+	batchId := uuid.New().String()
+	for i, e := range res.Failed {
+		f[i] = newBatchItemFailure("SetMessageVisibility", batchId, e.Id, e.Code, e.SenderFault)
+	}
+
+	return f, nil
 }
 
 // ReceiveMessages pulls a batch of messages from the queue

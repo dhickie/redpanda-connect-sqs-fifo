@@ -10,6 +10,8 @@ import (
 	"slices"
 	"sync"
 	"time"
+
+	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
 // MessageTracker tracks all messages that have been received from SQS but haven't yet been deleted from the queue
@@ -23,10 +25,15 @@ type MessageTracker struct {
 	sqs          *aws.SqsClient                 // The SQS client
 	m            *sync.RWMutex                  // The mutex used to provide thread safety
 	lt           *util.Lifetime                 // Manages application lifetime and shutdown events
+	logger       *service.Logger                // For writing custom logs
 }
 
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
-func NewMessageTracker(conf *models.InputConfig, sqs *aws.SqsClient, lt *util.Lifetime) *MessageTracker {
+func NewMessageTracker(
+	conf *models.InputConfig,
+	sqs *aws.SqsClient,
+	lt *util.Lifetime,
+	logger *service.Logger) *MessageTracker {
 	return &MessageTracker{
 		groups:       make(map[string]*groupTracker),
 		idMap:        make(map[*string]*models.SqsMessage),
@@ -36,6 +43,7 @@ func NewMessageTracker(conf *models.InputConfig, sqs *aws.SqsClient, lt *util.Li
 		sqs:          sqs,
 		m:            &sync.RWMutex{},
 		lt:           lt,
+		logger:       logger,
 	}
 }
 
@@ -43,6 +51,7 @@ func NewMessageTracker(conf *models.InputConfig, sqs *aws.SqsClient, lt *util.Li
 func (t *MessageTracker) Start() {
 	wg := t.lt.Register(1)
 	wg.Go(t.refreshLoop)
+	t.logger.Debug("Visibility deadline refresh loop started")
 }
 
 // Add adds a collection of messages to the tracker
@@ -113,7 +122,8 @@ func (t *MessageTracker) Ack(id *string) {
 
 	msg, ok := t.idMap[id]
 	if !ok {
-		panic("Fatal: Ack called for unknown message") // TODO maybe just log error instead?
+		t.logger.Errorf("Ack: Unable to find message ID %v in ID map", *id)
+		return
 	}
 
 	// Delete the message from the front of its group
@@ -146,7 +156,8 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 	for _, id := range ids {
 		msg, ok := t.idMap[id]
 		if !ok {
-			panic("Fatal: Nack called for unknown message") // TODO maybe just log error instead?
+			t.logger.Errorf("Nack: Unable to find message ID %v in ID map", *id)
+			return nil
 		}
 
 		// Increment the attempt counter
@@ -168,7 +179,8 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 		groupId := msg.GetGroupId()
 		group, ok := t.groups[groupId]
 		if !ok {
-			panic("Fatal: Unable to find group for message") // TODO maybe just log error instead?
+			t.logger.Errorf("Nack: Unable to find group ID %v in ID map", groupId)
+			continue
 		}
 
 		abandon = append(abandon, group.queue...)
@@ -182,13 +194,15 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 	batches := slices.Chunk(abandon, 10)
 	for batch := range batches {
 		// Reset message visibility to make it available again
-		err := t.sqs.SetMessageVisibility(ctx, 0, batch...)
+		failures, err := t.sqs.SetMessageVisibility(ctx, 0, batch...)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
 			}
+		}
 
-			// TODO handle partial batch failures - log a warning
+		for _, failure := range failures {
+			t.logger.Warn(failure.Sprint())
 		}
 	}
 
@@ -228,9 +242,11 @@ refreshLoop:
 	for {
 		select {
 		case <-t.lt.Terminated():
+			t.logger.Debug("Refresh loop received graceful termination order - resetting visibility")
 			t.resetVisibility(t.lt.Ctx)
 			break refreshLoop
 		case <-t.lt.Killed():
+			t.logger.Debug("Refresh loop received kill order - breaking loop")
 			break refreshLoop
 		case <-ticker.C:
 			t.refreshVisibility(t.lt.Ctx)
@@ -255,15 +271,24 @@ func (t *MessageTracker) refreshVisibility(ctx context.Context) {
 		}
 	}
 
+	t.logger.Debugf("Found %v messages requiring visibility deadline refresh", len(refList))
+
 	// Chunk into groups of 10 max
 	for batch := range slices.Chunk(refList, 10) {
-		err := t.sqs.SetMessageVisibility(ctx, int32(t.conf.VisibilityTimeoutSeconds), batch...)
+		failures, err := t.sqs.SetMessageVisibility(ctx, int32(t.conf.VisibilityTimeoutSeconds), batch...)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return
 			}
 
-			// TODO log a warning here
+			dref := util.SelectDeref(batch)
+			t.logger.Warnf("Error refreshing message visibility: %v\nAffected message IDs: %v",
+				err, dref)
+			continue
+		}
+
+		for _, failure := range failures {
+			t.logger.Warn(failure.Sprint())
 		}
 
 		for _, msg := range batch {
@@ -287,12 +312,15 @@ func (t *MessageTracker) resetVisibility(ctx context.Context) {
 	// Batch to 10 max
 	batches := slices.Chunk(msgs, 10)
 	for batch := range batches {
-		if err := t.sqs.SetMessageVisibility(ctx, 0, batch...); err != nil {
+		failures, err := t.sqs.SetMessageVisibility(ctx, 0, batch...)
+		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return
 			}
+		}
 
-			// TODO log an error here
+		for _, failure := range failures {
+			t.logger.Error(failure.Sprint())
 		}
 	}
 }
