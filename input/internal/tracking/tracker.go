@@ -16,16 +16,17 @@ import (
 
 // MessageTracker tracks all messages that have been received from SQS but haven't yet been deleted from the queue
 type MessageTracker struct {
-	groups       map[string]*groupTracker       // Messages split by message group ID
-	idMap        map[*string]*models.SqsMessage // Map of message IDs to messages
-	pendingFlush []*models.SqsMessage           // Messages pending a flush downstream
-	refreshQueue *list.List                     // A time ordered list of all in-flight messages by their visibility expiry
-	refreshMap   map[string]*list.Element       // Map of message IDs to elements in the refresh queue
-	conf         *models.InputConfig            // The configuration for the input
-	sqs          *aws.SqsClient                 // The SQS client
-	m            *sync.RWMutex                  // The mutex used to provide thread safety
-	lt           *util.Lifetime                 // Manages application lifetime and shutdown events
-	logger       *service.Logger                // For writing custom logs
+	groups        map[string]*groupTracker       // Messages split by message group ID
+	idMap         map[*string]*models.SqsMessage // Map of message IDs to messages
+	pendingFlush  []*models.SqsMessage           // Messages pending a flush downstream
+	refreshQueue  *list.List                     // A time ordered list of all in-flight messages by their visibility expiry
+	refreshMap    map[string]*list.Element       // Map of message IDs to elements in the refresh queue
+	conf          *models.InputConfig            // The configuration for the input
+	sqs           *aws.SqsClient                 // The SQS client
+	m             *sync.RWMutex                  // The mutex used to provide thread safety
+	msgsAvailable *util.ContextCond              // Used to signal that messages are available to be flushed
+	lt            *util.Lifetime                 // Manages application lifetime and shutdown events
+	logger        *service.Logger                // For writing custom logs
 }
 
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
@@ -34,16 +35,18 @@ func NewMessageTracker(
 	sqs *aws.SqsClient,
 	lt *util.Lifetime,
 	logger *service.Logger) *MessageTracker {
+	m := &sync.RWMutex{}
 	return &MessageTracker{
-		groups:       make(map[string]*groupTracker),
-		idMap:        make(map[*string]*models.SqsMessage),
-		pendingFlush: make([]*models.SqsMessage, 0),
-		refreshQueue: list.New(),
-		conf:         conf,
-		sqs:          sqs,
-		m:            &sync.RWMutex{},
-		lt:           lt,
-		logger:       logger,
+		groups:        make(map[string]*groupTracker),
+		idMap:         make(map[*string]*models.SqsMessage),
+		pendingFlush:  make([]*models.SqsMessage, 0),
+		refreshQueue:  list.New(),
+		conf:          conf,
+		sqs:           sqs,
+		m:             m,
+		msgsAvailable: util.NewContextCond(m),
+		lt:            lt,
+		logger:        logger,
 	}
 }
 
@@ -86,6 +89,9 @@ func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
 		}
 		next := t.groups[k].add(v)
 		if next != nil {
+			if len(t.pendingFlush) == 0 {
+				t.msgsAvailable.Signal() // Signal Flush() that a new message is available
+			}
 			t.pendingFlush = append(t.pendingFlush, next)
 		}
 	}
@@ -105,14 +111,22 @@ func (t *MessageTracker) Peek(id *string) (*models.SqsMessage, error) {
 }
 
 // Flush returns the next message to be sent downstream and removes it from the pending messages list
-func (t *MessageTracker) Flush() *models.SqsMessage {
+func (t *MessageTracker) Flush(ctx context.Context) (*models.SqsMessage, error) {
 	t.m.Lock()
 	defer t.m.Unlock()
 
-	// TODO deal with case where no messages are available yet
+	if len(t.pendingFlush) == 0 {
+		// Wait for a message to be available if there currently aren't any
+		for len(t.pendingFlush) == 0 {
+			if err := t.msgsAvailable.Wait(ctx); err != nil {
+				return nil, err
+			}
+		}
+	}
+
 	msg := t.pendingFlush[0]
 	t.pendingFlush = t.pendingFlush[1:]
-	return msg
+	return msg, nil
 }
 
 // Ack acknowledges that a message has been processed and deleted from the SQS queue

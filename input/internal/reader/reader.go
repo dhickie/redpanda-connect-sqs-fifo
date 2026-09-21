@@ -60,8 +60,8 @@ func (r *SqsFifoReader) Start() {
 }
 
 // Next returns the next message available for processing
-func (r *SqsFifoReader) Next() *models.SqsMessage {
-	return r.tracker.Flush()
+func (r *SqsFifoReader) Next(ctx context.Context) (*models.SqsMessage, error) {
+	return r.tracker.Flush(ctx)
 }
 
 // Ack acknowledges a message and adds it to the list of pending acknowledgements

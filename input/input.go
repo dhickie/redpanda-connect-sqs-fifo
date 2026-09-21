@@ -65,7 +65,11 @@ func (i *SqsFifoInput) Connect(context.Context) error {
 // Read gets the next message to be processed by the pipeline, and a callback function to call once it has been
 // fully processed
 func (i *SqsFifoInput) Read(ctx context.Context) (*service.Message, service.AckFunc, error) {
-	sqsMsg := i.reader.Next()
+	sqsMsg, err := i.reader.Next(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+
 	i.logger.Debugf("Retrieved message ID %v from input", sqsMsg.Msg.MessageId)
 
 	sMsg := service.NewMessage([]byte(*sqsMsg.Msg.Body))
