@@ -7,6 +7,7 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/tracking"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
+	"slices"
 	"sync"
 	"time"
 
@@ -137,6 +138,7 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 	r.logger.Debugf("Ack loop found %v acks to process", r.pendingAck.Len())
 
 	batch := make([]*models.SqsMessage, 0, 10)
+	failedIds := make([]*string, 0)
 	for e := r.pendingAck.Front(); e != nil; e = e.Next() {
 		msg, err := r.tracker.Peek(e.Value.(*string))
 		if err != nil {
@@ -146,18 +148,25 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 
 		batch = append(batch, msg)
 		if len(batch) == 10 || e.Next() == nil {
-			err := r.client.DeleteMessages(ctx, batch)
+			failures, err := r.client.DeleteMessages(ctx, batch)
 			if err != nil {
-				// TODO deal with failed batch members
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return ctxErr
 				}
 
 				r.logger.Errorf("Failed to delete messages during ack: %v", err.Error())
+				return nil
+			}
+
+			for _, failure := range failures {
+				r.logger.Error(failure.Sprint()) // Log failed batch members
+				failedIds = append(failedIds, failure.MsgId)
 			}
 
 			for _, bMsg := range batch {
-				r.tracker.Ack(bMsg.Msg.MessageId)
+				if !slices.Contains(failedIds, bMsg.Msg.MessageId) { // Only ack successful deletes on the tracker
+					r.tracker.Ack(bMsg.Msg.MessageId)
+				}
 			}
 
 			clear(batch)
@@ -166,6 +175,10 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 
 	// Clear the pending list
 	r.pendingAck = r.pendingAck.Init()
+	// Add any failed acks back to the pending list
+	for _, id := range failedIds {
+		r.pendingAck.PushBack(id)
+	}
 	return nil
 }
 

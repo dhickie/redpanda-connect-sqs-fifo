@@ -3,6 +3,7 @@ package aws
 import (
 	"context"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
+	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
 	"strconv"
 	"uuid"
 
@@ -64,13 +65,8 @@ func (c *SqsClient) SetMessageVisibility(
 		return []*BatchItemFailure{}, nil
 	}
 
-	f := make([]*BatchItemFailure, len(res.Failed))
-	batchId := uuid.New().String()
-	for i, e := range res.Failed {
-		f[i] = newBatchItemFailure("SetMessageVisibility", batchId, e.Id, e.Code, e.SenderFault)
-	}
-
-	return f, nil
+	bId := uuid.New().String()
+	return toBatchItemFailureArray(res.Failed, bId), nil
 }
 
 // ReceiveMessages pulls a batch of messages from the queue
@@ -93,13 +89,13 @@ func (c *SqsClient) ReceiveMessages(ctx context.Context, maxMsgs int) ([]*models
 	return msgs, nil
 }
 
-func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessage) error {
+func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessage) ([]*BatchItemFailure, error) {
 	if len(msgs) == 0 {
-		return nil
+		return []*BatchItemFailure{}, nil
 	}
 
 	if len(msgs) > maxBatchSize {
-		return newBatchSizeError(len(msgs), "DeleteMessages")
+		return nil, newBatchSizeError(len(msgs), "DeleteMessages")
 	}
 
 	req := sqs.DeleteMessageBatchInput{
@@ -114,13 +110,17 @@ func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessag
 		req.Entries[i] = entry
 	}
 
-	_, err := c.client.DeleteMessageBatch(ctx, &req)
+	res, err := c.client.DeleteMessageBatch(ctx, &req)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	// TODO check for failed batch members
-	return nil
+	if len(res.Failed) == 0 {
+		return []*BatchItemFailure{}, nil
+	}
+
+	bId := uuid.New().String()
+	return toBatchItemFailureArray(res.Failed, bId), nil
 }
 
 // GetQueueVisibilityTimeout gets the infrastructure configured visibility timeout for the configured queue
@@ -144,4 +144,10 @@ func (c *SqsClient) GetQueueVisibilityTimeout(ctx context.Context) (int32, error
 	}
 
 	return int32(i), nil
+}
+
+func toBatchItemFailureArray(in []types.BatchResultErrorEntry, batchId string) []*BatchItemFailure {
+	return util.Select(in, func(in types.BatchResultErrorEntry) *BatchItemFailure {
+		return newBatchItemFailure("DeleteMessages", batchId, in.Id, in.Code, in.SenderFault)
+	})
 }

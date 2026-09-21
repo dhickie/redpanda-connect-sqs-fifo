@@ -4,9 +4,10 @@ import "fmt"
 
 // BatchItemFailure represents a failed item in a batch operation
 type BatchItemFailure struct {
+	MsgId *string // The message ID the failure occurred for
+
 	operation   *string // What operation was being attempted for the batch
 	batchId     *string // An ID for the batch in which this failure occurred
-	msgId       *string // The message ID the failure occurred for
 	error       *string // The error that occurred
 	senderError bool    // Whether the error was the fault of the sender
 }
@@ -20,7 +21,7 @@ func newBatchItemFailure(
 	return &BatchItemFailure{
 		operation:   &operation,
 		batchId:     &batchId,
-		msgId:       msgId,
+		MsgId:       msgId,
 		error:       error,
 		senderError: senderError,
 	}
@@ -36,5 +37,5 @@ func (f *BatchItemFailure) Sprint() string {
 	}
 
 	return fmt.Sprintf("A %v error occurred in batch %v while performing a %v operation for message ID %v: %v",
-		blame, f.batchId, f.operation, f.msgId, f.error)
+		blame, f.batchId, f.operation, f.MsgId, f.error)
 }

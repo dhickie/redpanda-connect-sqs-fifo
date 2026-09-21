@@ -199,6 +199,9 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
 			}
+
+			t.logger.Errorf("Nack: Unable to reset message visibility for batch: %v", err)
+			return err
 		}
 
 		for _, failure := range failures {
@@ -317,6 +320,9 @@ func (t *MessageTracker) resetVisibility(ctx context.Context) {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return
 			}
+
+			t.logger.Errorf("Error resetting message visibility for batch: %v", err)
+			return
 		}
 
 		for _, failure := range failures {
