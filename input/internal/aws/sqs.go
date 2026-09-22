@@ -34,9 +34,9 @@ func NewSqsClient(conf models.InputConfig) (*SqsClient, error) {
 func (c *SqsClient) SetMessageVisibility(
 	ctx context.Context,
 	newTimeoutSeconds int32,
-	msgs ...*models.SqsMessage) ([]*BatchItemFailure, error) {
+	msgs ...*models.SqsMessage) (*BatchOpResult, error) {
 	if len(msgs) == 0 {
-		return []*BatchItemFailure{}, nil
+		return newEmptyBatchOpResult(), nil
 	}
 
 	if len(msgs) > maxBatchSize {
@@ -62,11 +62,13 @@ func (c *SqsClient) SetMessageVisibility(
 	}
 
 	if len(res.Failed) == 0 { // All successful
-		return []*BatchItemFailure{}, nil
+		return newEmptyBatchOpResult(), nil
 	}
 
 	bId := uuid.New().String()
-	return toBatchItemFailureArray(res.Failed, bId), nil
+	return toBatchOpResult(res.Successful, res.Failed, bId, func(entry types.ChangeMessageVisibilityBatchResultEntry) *string {
+		return entry.Id
+	}), nil
 }
 
 // ReceiveMessages pulls a batch of messages from the queue
@@ -89,9 +91,10 @@ func (c *SqsClient) ReceiveMessages(ctx context.Context, maxMsgs int) ([]*models
 	return msgs, nil
 }
 
-func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessage) ([]*BatchItemFailure, error) {
+// DeleteMessages deletes a batch of messages from the queue
+func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessage) (*BatchOpResult, error) {
 	if len(msgs) == 0 {
-		return []*BatchItemFailure{}, nil
+		return newEmptyBatchOpResult(), nil
 	}
 
 	if len(msgs) > maxBatchSize {
@@ -116,11 +119,13 @@ func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessag
 	}
 
 	if len(res.Failed) == 0 {
-		return []*BatchItemFailure{}, nil
+		return newEmptyBatchOpResult(), nil
 	}
 
 	bId := uuid.New().String()
-	return toBatchItemFailureArray(res.Failed, bId), nil
+	return toBatchOpResult(res.Successful, res.Failed, bId, func(entry types.DeleteMessageBatchResultEntry) *string {
+		return entry.Id
+	}), nil
 }
 
 // GetQueueVisibilityTimeout gets the infrastructure configured visibility timeout for the configured queue
@@ -146,8 +151,18 @@ func (c *SqsClient) GetQueueVisibilityTimeout(ctx context.Context) (int32, error
 	return int32(i), nil
 }
 
-func toBatchItemFailureArray(in []types.BatchResultErrorEntry, batchId string) []*BatchItemFailure {
-	return util.Select(in, func(in types.BatchResultErrorEntry) *BatchItemFailure {
-		return newBatchItemFailure("DeleteMessages", batchId, in.Id, in.Code, in.SenderFault)
+type BatchSuccessResult interface {
+	types.DeleteMessageBatchResultEntry | types.ChangeMessageVisibilityBatchResultEntry
+}
+
+func toBatchOpResult[T BatchSuccessResult](
+	successes []T, failures []types.BatchResultErrorEntry, batchId string, idExtractor func(T) *string) *BatchOpResult {
+	s := util.Select(successes, func(v T) *BatchItemSuccess {
+		return newBatchItemSuccess(*idExtractor(v))
 	})
+	f := util.Select(failures, func(v types.BatchResultErrorEntry) *BatchItemFailure {
+		return newBatchItemFailure("DeleteMessages", batchId, v.Id, v.Code, v.SenderFault)
+	})
+
+	return newBatchOpResult(s, f)
 }

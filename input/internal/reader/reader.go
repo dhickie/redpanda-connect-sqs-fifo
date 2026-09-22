@@ -7,7 +7,6 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/tracking"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
-	"slices"
 	"sync"
 	"time"
 
@@ -148,7 +147,7 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 
 		batch = append(batch, msg)
 		if len(batch) == 10 || e.Next() == nil {
-			failures, err := r.client.DeleteMessages(ctx, batch)
+			res, err := r.client.DeleteMessages(ctx, batch)
 			if err != nil {
 				if ctxErr := ctx.Err(); ctxErr != nil {
 					return ctxErr
@@ -158,15 +157,13 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 				return nil
 			}
 
-			for _, failure := range failures {
+			for _, failure := range res.Failures {
 				r.logger.Error(failure.Sprint()) // Log failed batch members
 				failedIds = append(failedIds, failure.MsgId)
 			}
 
-			for _, bMsg := range batch {
-				if !slices.Contains(failedIds, bMsg.Msg.MessageId) { // Only ack successful deletes on the tracker
-					r.tracker.Ack(bMsg.Msg.MessageId)
-				}
+			for _, success := range res.Successes {
+				r.tracker.Ack(success.MsgId)
 			}
 
 			clear(batch)

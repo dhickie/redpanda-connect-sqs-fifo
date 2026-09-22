@@ -16,17 +16,17 @@ import (
 
 // MessageTracker tracks all messages that have been received from SQS but haven't yet been deleted from the queue
 type MessageTracker struct {
-	groups        map[string]*groupTracker       // Messages split by message group ID
-	idMap         map[*string]*models.SqsMessage // Map of message IDs to messages
-	pendingFlush  []*models.SqsMessage           // Messages pending a flush downstream
-	refreshQueue  *list.List                     // A time ordered list of all in-flight messages by their visibility expiry
-	refreshMap    map[string]*list.Element       // Map of message IDs to elements in the refresh queue
-	conf          *models.InputConfig            // The configuration for the input
-	sqs           *aws.SqsClient                 // The SQS client
-	m             *sync.RWMutex                  // The mutex used to provide thread safety
-	msgsAvailable *util.ContextCond              // Used to signal that messages are available to be flushed
-	lt            *util.Lifetime                 // Manages application lifetime and shutdown events
-	logger        *service.Logger                // For writing custom logs
+	groups        map[string]*groupTracker      // Messages split by message group ID
+	idMap         map[string]*models.SqsMessage // Map of message IDs to messages
+	pendingFlush  []*models.SqsMessage          // Messages pending a flush downstream
+	refreshQueue  *list.List                    // A time ordered list of all in-flight messages by their visibility expiry
+	refreshMap    map[string]*list.Element      // Map of message IDs to elements in the refresh queue
+	conf          *models.InputConfig           // The configuration for the input
+	sqs           *aws.SqsClient                // The SQS client
+	m             *sync.RWMutex                 // The mutex used to provide thread safety
+	msgsAvailable *util.ContextCond             // Used to signal that messages are available to be flushed
+	lt            *util.Lifetime                // Manages application lifetime and shutdown events
+	logger        *service.Logger               // For writing custom logs
 }
 
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
@@ -38,7 +38,7 @@ func NewMessageTracker(
 	m := &sync.RWMutex{}
 	return &MessageTracker{
 		groups:        make(map[string]*groupTracker),
-		idMap:         make(map[*string]*models.SqsMessage),
+		idMap:         make(map[string]*models.SqsMessage),
 		pendingFlush:  make([]*models.SqsMessage, 0),
 		refreshQueue:  list.New(),
 		conf:          conf,
@@ -75,7 +75,7 @@ func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
 		tempMap[mgid] = append(tempMap[mgid], msg)
 
 		// Add to the relevant maps/lists to support later processes
-		t.idMap[msg.Msg.MessageId] = msg
+		t.idMap[*msg.Msg.MessageId] = msg
 		e := t.refreshQueue.PushBack(msg)
 		t.refreshMap[*msg.Msg.MessageId] = e
 	}
@@ -102,7 +102,7 @@ func (t *MessageTracker) Peek(id *string) (*models.SqsMessage, error) {
 	t.m.RLock()
 	defer t.m.RUnlock()
 
-	msg, ok := t.idMap[id]
+	msg, ok := t.idMap[*id]
 	if !ok {
 		return nil, errors.New("Peek: Cannot find message with id " + *id)
 	}
@@ -130,13 +130,13 @@ func (t *MessageTracker) Flush(ctx context.Context) (*models.SqsMessage, error) 
 }
 
 // Ack acknowledges that a message has been processed and deleted from the SQS queue
-func (t *MessageTracker) Ack(id *string) {
+func (t *MessageTracker) Ack(id string) {
 	t.m.Lock()
 	defer t.m.Unlock()
 
 	msg, ok := t.idMap[id]
 	if !ok {
-		t.logger.Errorf("Ack: Unable to find message ID %v in ID map", *id)
+		t.logger.Errorf("Ack: Unable to find message ID %v in ID map", id)
 		return
 	}
 
@@ -168,7 +168,7 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 
 	noRetry := make([]*models.SqsMessage, 0, len(ids))
 	for _, id := range ids {
-		msg, ok := t.idMap[id]
+		msg, ok := t.idMap[*id]
 		if !ok {
 			t.logger.Errorf("Nack: Unable to find message ID %v in ID map", *id)
 			return nil
@@ -208,7 +208,7 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 	batches := slices.Chunk(abandon, 10)
 	for batch := range batches {
 		// Reset message visibility to make it available again
-		failures, err := t.sqs.SetMessageVisibility(ctx, 0, batch...)
+		res, err := t.sqs.SetMessageVisibility(ctx, 0, batch...)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return ctxErr
@@ -218,7 +218,7 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 			return err
 		}
 
-		for _, failure := range failures {
+		for _, failure := range res.Failures {
 			t.logger.Warn(failure.Sprint())
 		}
 	}
@@ -243,7 +243,7 @@ func (t *MessageTracker) Length() int {
 func (t *MessageTracker) cleanupMessages(msgs ...*models.SqsMessage) {
 	for _, msg := range msgs {
 		id := msg.Msg.MessageId
-		delete(t.idMap, id)
+		delete(t.idMap, *id)
 		e := t.refreshMap[*id]
 		delete(t.refreshMap, *id)
 		t.refreshQueue.Remove(e)
@@ -276,23 +276,21 @@ func (t *MessageTracker) refreshVisibility(ctx context.Context) {
 	defer t.m.Unlock()
 
 	// Build the list of messages which currently need refreshing
-	refList := make([]*models.SqsMessage, 0)
-	for element := t.refreshQueue.Front(); element != nil; element = t.refreshQueue.Front() {
-		msg := element.Value.(*models.SqsMessage)
+	refMsgs := make([]*models.SqsMessage, 0)
+	for e := t.refreshQueue.Front(); e != nil; e = e.Next() {
+		msg := e.Value.(*models.SqsMessage)
 		if msg.RemainingDeadline() < t.conf.VisibilityTimeoutSeconds/2 {
-			refList = append(refList, msg)
-			// TODO don't move to back until refresh has been successful
-			t.refreshQueue.MoveToBack(element) // Keep the refresh queue in order
+			refMsgs = append(refMsgs, msg)
 		} else {
 			break
 		}
 	}
 
-	t.logger.Debugf("Found %v messages requiring visibility deadline refresh", len(refList))
+	t.logger.Debugf("Found %v messages requiring visibility deadline refresh", len(refMsgs))
 
 	// Chunk into groups of 10 max
-	for batch := range slices.Chunk(refList, 10) {
-		failures, err := t.sqs.SetMessageVisibility(ctx, int32(t.conf.VisibilityTimeoutSeconds), batch...)
+	for batch := range slices.Chunk(refMsgs, 10) {
+		res, err := t.sqs.SetMessageVisibility(ctx, int32(t.conf.VisibilityTimeoutSeconds), batch...)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return
@@ -304,12 +302,18 @@ func (t *MessageTracker) refreshVisibility(ctx context.Context) {
 			continue
 		}
 
-		for _, failure := range failures {
+		// Logs any failures in the batch
+		for _, failure := range res.Failures {
 			t.logger.Warn(failure.Sprint())
 		}
 
-		for _, msg := range batch {
+		// Refresh the deadline of any messages that succeeded, and move them to the back of the refresh queue
+		for _, r := range res.Successes {
+			msg := t.idMap[r.MsgId]
+			e := t.refreshMap[r.MsgId]
+
 			msg.RefreshDeadline(t.conf.VisibilityTimeoutSeconds)
+			t.refreshQueue.MoveToBack(e)
 		}
 	}
 }
@@ -329,7 +333,7 @@ func (t *MessageTracker) resetVisibility(ctx context.Context) {
 	// Batch to 10 max
 	batches := slices.Chunk(msgs, 10)
 	for batch := range batches {
-		failures, err := t.sqs.SetMessageVisibility(ctx, 0, batch...)
+		res, err := t.sqs.SetMessageVisibility(ctx, 0, batch...)
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return
@@ -339,7 +343,7 @@ func (t *MessageTracker) resetVisibility(ctx context.Context) {
 			return
 		}
 
-		for _, failure := range failures {
+		for _, failure := range res.Failures {
 			t.logger.Error(failure.Sprint())
 		}
 	}
