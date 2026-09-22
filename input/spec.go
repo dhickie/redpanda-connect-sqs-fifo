@@ -9,7 +9,6 @@ import (
 // Input configuration fields
 const (
 	confFieldUrl                   = "url"
-	confFieldVisibilityTimeout     = "visibility_timeout"
 	confFieldMinReceiveBatchSize   = "min_receive_batch_size"
 	confFieldMaxReceiveBatchSize   = "max_receive_batch_size"
 	confFieldMaxInFlightMessages   = "max_in_flight_messages"
@@ -22,9 +21,6 @@ func inputConfigFromConnectConfig(cConfig *service.ParsedConfig) (*models.InputC
 	var err error
 
 	if conf.QueueUrl, err = cConfig.FieldString(confFieldUrl); err != nil {
-		return nil, err
-	}
-	if conf.VisibilityTimeoutSeconds, err = cConfig.FieldInt(confFieldVisibilityTimeout); err != nil {
 		return nil, err
 	}
 	if conf.MinReceiveBatchSize, err = cConfig.FieldInt(confFieldMinReceiveBatchSize); err != nil {
@@ -73,11 +69,6 @@ func sqsFifoInputSpec() *service.ConfigSpec {
 		Fields(
 			service.NewURLField(confFieldUrl).
 				Description("The URL of the SQS FIFO queue"),
-			service.NewIntField(confFieldVisibilityTimeout).
-				Description("The visibility timeout of messages received from the queue, in seconds. Visibility timeouts will automatically be extended to this amount periodically once they have been received but have not yet been acked.").
-				ShortDescription("The visibility timeout of messages received from the queue, in seconds.").
-				Default(30).
-				Advanced(),
 			service.NewIntField(confFieldMinReceiveBatchSize).
 				Description("The minimum batch size to use when receiving new messages. There must be at least this much free space in the buffer of in-flight messages before any attempt is made to fetch more.").
 				ShortDescription("The minimum batch size to use when receiving new messages.").

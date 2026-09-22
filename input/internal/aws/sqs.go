@@ -129,7 +129,7 @@ func (c *SqsClient) DeleteMessages(ctx context.Context, msgs []*models.SqsMessag
 }
 
 // GetQueueVisibilityTimeout gets the infrastructure configured visibility timeout for the configured queue
-func (c *SqsClient) GetQueueVisibilityTimeout(ctx context.Context) (int32, error) {
+func (c *SqsClient) GetQueueVisibilityTimeout(ctx context.Context) (int, error) {
 	req := sqs.GetQueueAttributesInput{
 		QueueUrl: &c.conf.QueueUrl,
 		AttributeNames: []types.QueueAttributeName{
@@ -148,7 +148,7 @@ func (c *SqsClient) GetQueueVisibilityTimeout(ctx context.Context) (int32, error
 		return 0, err
 	}
 
-	return int32(i), nil
+	return int(i), nil
 }
 
 type BatchSuccessResult interface {

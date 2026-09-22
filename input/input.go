@@ -22,6 +22,7 @@ const (
 
 // SqsFifoInput is the top level object that interacts with the Connect SDK.
 type SqsFifoInput struct {
+	conf     *models.InputConfig   // The configuration for the input
 	reader   *reader.SqsFifoReader // Reads from the queue, and makes messages available for processing.
 	ackChan  chan *string          // Channel used to indicate a message has been processed successfully.
 	nackChan chan *string          // Channel used to indicate a message has not been processed successfully.
@@ -43,16 +44,29 @@ func NewSqsFifoInput(conf *models.InputConfig, logger *service.Logger) *SqsFifoI
 
 // ConnectionTest tests that the input can reach the target queue successfully by running a health check
 func (i *SqsFifoInput) ConnectionTest(ctx context.Context) service.ConnectionTestResults {
-	err := i.reader.Healthcheck(ctx)
+	tOut, err := i.reader.GetQueueVisibilityTimeout(ctx)
 	if err != nil {
 		return service.ConnectionTestFailed(err).AsList()
 	}
+
+	// Set the visibility timeout for use later
+	i.conf.VisibilityTimeoutSeconds = tOut
 
 	return service.ConnectionTestSucceeded().AsList()
 }
 
 // Connect starts the input by starting the reader and ack/nack callback loop
-func (i *SqsFifoInput) Connect(context.Context) error {
+func (i *SqsFifoInput) Connect(ctx context.Context) error {
+	// Get the visibility timeout for the queue if we haven't got it already
+	if i.conf.VisibilityTimeoutSeconds == 0 {
+		tOut, err := i.reader.GetQueueVisibilityTimeout(ctx)
+		if err != nil {
+			return err
+		}
+
+		i.conf.VisibilityTimeoutSeconds = tOut
+	}
+
 	i.reader.Start()
 
 	wg := i.lt.Register(1)

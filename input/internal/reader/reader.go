@@ -49,11 +49,9 @@ func NewSqsFifoReader(conf *models.InputConfig, lt *util.Lifetime, logger *servi
 	}
 }
 
-// Healthcheck checks whether the reader can successfully connect to the target queue.
-// Returns nil if the connection was successful
-func (r *SqsFifoReader) Healthcheck(ctx context.Context) error {
-	_, err := r.client.GetQueueVisibilityTimeout(ctx)
-	return err
+// GetQueueVisibilityTimeout gets the visibility timeout of the queue in seconds
+func (r *SqsFifoReader) GetQueueVisibilityTimeout(ctx context.Context) (int, error) {
+	return r.client.GetQueueVisibilityTimeout(ctx)
 }
 
 // Start starts the reader and begins populating the message queue
