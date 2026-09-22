@@ -26,6 +26,7 @@ type MessageTracker struct {
 	m             *sync.RWMutex                 // The mutex used to provide thread safety
 	msgsAvailable *util.ContextCond             // Used to signal that messages are available to be flushed
 	lt            *util.Lifetime                // Manages application lifetime and shutdown events
+	readCond      *util.AsyncCond               // For signalling the read loop that there is capacity for more messages
 	logger        *service.Logger               // For writing custom logs
 }
 
@@ -34,6 +35,7 @@ func NewMessageTracker(
 	conf *models.InputConfig,
 	sqs *aws.SqsClient,
 	lt *util.Lifetime,
+	readCond *util.AsyncCond,
 	logger *service.Logger) *MessageTracker {
 	m := &sync.RWMutex{}
 	return &MessageTracker{
@@ -46,6 +48,7 @@ func NewMessageTracker(
 		m:             m,
 		msgsAvailable: util.NewContextCond(m),
 		lt:            lt,
+		readCond:      readCond,
 		logger:        logger,
 	}
 }
@@ -57,8 +60,9 @@ func (t *MessageTracker) Start() {
 	t.logger.Debug("Visibility deadline refresh loop started")
 }
 
-// Add adds a collection of messages to the tracker
-func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
+// Add adds a collection of messages to the tracker.
+// Returns the current number of in-flight messages after adding the new batch
+func (t *MessageTracker) Add(msgs []*models.SqsMessage) int {
 	t.m.Lock()
 	defer t.m.Unlock()
 
@@ -95,6 +99,8 @@ func (t *MessageTracker) Add(msgs []*models.SqsMessage) {
 			t.pendingFlush = append(t.pendingFlush, next)
 		}
 	}
+
+	return t.length()
 }
 
 // Peek gets a message by its ID without flushing or acknowledging it
@@ -157,6 +163,11 @@ func (t *MessageTracker) Ack(id string) {
 
 	// Clean up the message ID map and refresh queue
 	t.cleanupMessages(msg)
+
+	// Signal for more messages if we have room
+	if t.conf.MaxInFlightMessages-t.length() >= t.conf.MinReceiveBatchSize {
+		t.readCond.Signal()
+	}
 }
 
 // Nack acknowledges that messages have failed to be processed correctly,
@@ -223,6 +234,11 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 		}
 	}
 
+	// Signal for more messages if we have room
+	if t.conf.MaxInFlightMessages-t.length() >= t.conf.MinReceiveBatchSize {
+		t.readCond.Signal()
+	}
+
 	return nil
 }
 
@@ -231,6 +247,11 @@ func (t *MessageTracker) Length() int {
 	t.m.RLock()
 	defer t.m.RUnlock()
 
+	return t.length()
+}
+
+// Internal version of Length that doesn't need to lock - assumes the lock is held elsewhere
+func (t *MessageTracker) length() int {
 	i := 0
 	for _, v := range t.groups {
 		i += v.len()

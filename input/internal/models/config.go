@@ -7,4 +7,5 @@ type InputConfig struct {
 	MaxReceiveBatchSize      int
 	MaxInFlightMessages      int
 	MaxProcessingAttempts    int
+	MaxPendingAcks           int
 }

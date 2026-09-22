@@ -17,10 +17,13 @@ type SqsFifoReader struct {
 	client      *aws.SqsClient           // A client for the SQS API
 	tracker     *tracking.MessageTracker // Tracks all in-flight messages
 	pendingAck  *list.List               // Messages that have been acknowledged by the runtime but not yet deleted
-	pendingNack *list.List               // Messages that have had a negative acknowledgement by the runtime but not yet processed
-	conf        *models.InputConfig      // The configuration for the input
 	ackLock     *sync.Mutex              // A lock for protecting the collection of pending acks
+	ackCond     *util.AsyncCond          // For signalling the ackloop to process acks
+	pendingNack *list.List               // Messages that have had a negative acknowledgement by the runtime but not yet processed
 	nackLock    *sync.Mutex              // A lock for protecting the collection of pending nacks
+	nackCond    *util.AsyncCond          // For signalling the nackloop to process nacks
+	readCond    *util.AsyncCond          // For being signalled that there is capacity for more in-flight messages
+	conf        *models.InputConfig      // The configuration for the input
 	lt          *util.Lifetime           // Manages application lifetime and shutdown events
 	logger      *service.Logger          // For writing custom logs
 }
@@ -28,14 +31,20 @@ type SqsFifoReader struct {
 // TODO add max capacity to all slices where possible
 func NewSqsFifoReader(conf *models.InputConfig, lt *util.Lifetime, logger *service.Logger) *SqsFifoReader {
 	client := &aws.SqsClient{}
+	readCond := util.NewAsyncCond()
+	readCond.Signal() // Start in a signalled state to start reading immediately
+
 	return &SqsFifoReader{
 		client:      client,
-		tracker:     tracking.NewMessageTracker(conf, client, lt, logger),
+		tracker:     tracking.NewMessageTracker(conf, client, lt, readCond, logger),
 		pendingAck:  list.New(),
-		pendingNack: list.New(),
-		conf:        conf,
 		ackLock:     &sync.Mutex{},
+		ackCond:     util.NewAsyncCond(),
+		pendingNack: list.New(),
 		nackLock:    &sync.Mutex{},
+		nackCond:    util.NewAsyncCond(),
+		readCond:    readCond,
+		conf:        conf,
 		lt:          lt,
 		logger:      logger,
 	}
@@ -69,6 +78,9 @@ func (r *SqsFifoReader) Ack(id *string) {
 	defer r.ackLock.Unlock()
 
 	r.pendingAck.PushBack(id)
+	if r.pendingAck.Len() >= r.conf.MaxPendingAcks {
+		r.ackCond.Signal()
+	}
 }
 
 // Nack acknowledges a message has failed processing and adds it to the list of pending failed acknowledgements
@@ -77,11 +89,13 @@ func (r *SqsFifoReader) Nack(id *string) {
 	defer r.nackLock.Unlock()
 
 	r.pendingNack.PushBack(id)
+	if r.pendingNack.Len() >= r.conf.MaxPendingAcks {
+		r.nackCond.Signal()
+	}
 }
 
 // Reads messages from the queue if there's room in the buffer
 func (r *SqsFifoReader) readLoop() {
-	// TODO replace ticker with cond
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 
@@ -95,6 +109,8 @@ readLoop:
 			r.logger.Debug("Read loop received kill order - breaking loop")
 			break readLoop
 		case <-t.C:
+			r.read(r.lt.Ctx)
+		case <-r.readCond.WaitChan():
 			r.read(r.lt.Ctx)
 		}
 	}
@@ -111,7 +127,11 @@ func (r *SqsFifoReader) read(ctx context.Context) {
 		}
 
 		r.logger.Debugf("Received %d messages from queue", len(msgs))
-		r.tracker.Add(msgs)
+		newLen := r.tracker.Add(msgs)
+		if r.conf.MaxInFlightMessages-newLen >= r.conf.MinReceiveBatchSize {
+			// Still room for more
+			r.readCond.Signal()
+		}
 	}
 }
 
@@ -121,11 +141,21 @@ func (r *SqsFifoReader) ackLoop() {
 	defer t.Stop()
 
 ackLoop:
-	for range t.C {
-		// Give the application as long as possible to process any pending acknowledgements
-		if err := r.ack(r.lt.Ctx); err != nil {
-			r.logger.Debug("Ack loop received kill order - breaking loop")
+	for {
+		select {
+		// TODO do a better job of graceful shutdown - process until pending acks is empty
+		case <-r.lt.Killed():
 			break ackLoop
+		case <-t.C:
+			if err := r.ack(r.lt.Ctx); err != nil {
+				r.logger.Debug("Ack loop received kill order - breaking loop")
+				break ackLoop
+			}
+		case <-r.ackCond.WaitChan():
+			if err := r.ack(r.lt.Ctx); err != nil {
+				r.logger.Debug("Ack loop received kill order - breaking loop")
+				break ackLoop
+			}
 		}
 	}
 }
@@ -182,10 +212,24 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 
 func (r *SqsFifoReader) nackLoop() {
 	t := time.NewTicker(time.Second)
+	defer t.Stop()
+
 nackLoop:
-	for range t.C {
-		if err := r.nack(r.lt.Ctx); err != nil {
+	for {
+		select {
+		// TODO do a better job of graceful shutdown - process until pending nacks is empty
+		case <-r.lt.Killed():
 			break nackLoop
+		case <-t.C:
+			if err := r.nack(r.lt.Ctx); err != nil {
+				r.logger.Debug("Nack loop received kill order - breaking loop")
+				break nackLoop
+			}
+		case <-r.ackCond.WaitChan():
+			if err := r.nack(r.lt.Ctx); err != nil {
+				r.logger.Debug("Nack loop received kill order - breaking loop")
+				break nackLoop
+			}
 		}
 	}
 }

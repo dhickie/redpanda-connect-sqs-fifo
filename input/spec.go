@@ -14,6 +14,7 @@ const (
 	confFieldMaxReceiveBatchSize   = "max_receive_batch_size"
 	confFieldMaxInFlightMessages   = "max_in_flight_messages"
 	confFieldMaxProcessingAttempts = "max_processing_attempts"
+	confFieldMaxPendingAcks        = "max_pending_acknowledgements"
 )
 
 func inputConfigFromConnectConfig(cConfig *service.ParsedConfig) (*models.InputConfig, error) {
@@ -36,6 +37,9 @@ func inputConfigFromConnectConfig(cConfig *service.ParsedConfig) (*models.InputC
 		return nil, err
 	}
 	if conf.MaxProcessingAttempts, err = cConfig.FieldInt(confFieldMaxProcessingAttempts); err != nil {
+		return nil, err
+	}
+	if conf.MaxPendingAcks, err = cConfig.FieldInt(confFieldMaxPendingAcks); err != nil {
 		return nil, err
 	}
 
@@ -93,6 +97,11 @@ func sqsFifoInputSpec() *service.ConfigSpec {
 				Description("The maximum number of times processing of a message will be attempted before returning it to the queue. If this limit is reached and processing of a message is abandoned, then all in-flight messages for that group ID will be returned to the queue. Setting this to a high value will delay the message going to any configured deadletter queue, as well as the message being picked up by a different application instance. Setting this to a low value can lead to messages going to a deadletter queue prematurely, especially if message group IDs are coarsely grained. A value of 0 will retry failed messages indefinitely.").
 				ShortDescription("The maximum number of times processing of a message will be attempted before returning it to the queue.").
 				Default(3).
+				Advanced(),
+			service.NewIntField(confFieldMaxPendingAcks).
+				Description("The maximum number of pending acknowledged messages before processing them in a batch. Subsequent messages from a group will not be processed until the message at the front of the group has been acknowledged, so setting this value too high can harm message throughput within a group. Setting the value too low, however, can harm throughput by overloading the SQS API. Pending acknowledgements are also processed once per second if this limit is not reached.").
+				ShortDescription("The maximum number of pending acknowledged messages before processing them in a batch.").
+				Default(10).
 				Advanced(),
 		)
 }
