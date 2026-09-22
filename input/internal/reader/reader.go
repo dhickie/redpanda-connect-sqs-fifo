@@ -28,7 +28,6 @@ type SqsFifoReader struct {
 	logger      *service.Logger          // For writing custom logs
 }
 
-// TODO add max capacity to all slices where possible
 func NewSqsFifoReader(conf *models.InputConfig, lt *util.Lifetime, logger *service.Logger) *SqsFifoReader {
 	client := &aws.SqsClient{}
 	readCond := util.NewAsyncCond()

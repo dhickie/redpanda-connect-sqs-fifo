@@ -41,7 +41,7 @@ func NewMessageTracker(
 	return &MessageTracker{
 		groups:        make(map[string]*groupTracker),
 		idMap:         make(map[string]*models.SqsMessage),
-		pendingFlush:  make([]*models.SqsMessage, 0),
+		pendingFlush:  make([]*models.SqsMessage, 0, conf.MaxInFlightMessages),
 		refreshQueue:  list.New(),
 		conf:          conf,
 		sqs:           sqs,
@@ -73,7 +73,7 @@ func (t *MessageTracker) Add(msgs []*models.SqsMessage) int {
 
 		_, ok := tempMap[mgid]
 		if !ok {
-			tempMap[mgid] = make([]*models.SqsMessage, 0)
+			tempMap[mgid] = make([]*models.SqsMessage, 0, 10)
 		}
 
 		tempMap[mgid] = append(tempMap[mgid], msg)
@@ -297,7 +297,7 @@ func (t *MessageTracker) refreshVisibility(ctx context.Context) {
 	defer t.m.Unlock()
 
 	// Build the list of messages which currently need refreshing
-	refMsgs := make([]*models.SqsMessage, 0)
+	refMsgs := make([]*models.SqsMessage, 0, 10)
 	for e := t.refreshQueue.Front(); e != nil; e = e.Next() {
 		msg := e.Value.(*models.SqsMessage)
 		if msg.RemainingDeadline() < t.conf.VisibilityTimeoutSeconds/2 {

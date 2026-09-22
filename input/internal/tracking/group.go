@@ -14,7 +14,7 @@ type groupTracker struct {
 // Create a new empty group tracker for a group of messages that share a message group ID
 func newGroupTracker() *groupTracker {
 	return &groupTracker{
-		queue:    make([]*models.SqsMessage, 0),
+		queue:    make([]*models.SqsMessage, 0, 10), // Max capacity is a bit of a guess - could be a better way to reason about this
 		inFlight: false,
 	}
 }
