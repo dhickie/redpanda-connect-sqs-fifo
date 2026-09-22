@@ -2,9 +2,9 @@ package sqs_fifo
 
 import (
 	"context"
-	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
-	"dhickie/redpanda-connect-sqs-fifo/input/internal/reader"
-	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/reader"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"

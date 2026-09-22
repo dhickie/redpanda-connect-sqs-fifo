@@ -3,9 +3,9 @@ package tracking
 import (
 	"container/list"
 	"context"
-	"dhickie/redpanda-connect-sqs-fifo/input/internal/aws"
-	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
-	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/aws"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
 	"errors"
 	"slices"
 	"sync"
