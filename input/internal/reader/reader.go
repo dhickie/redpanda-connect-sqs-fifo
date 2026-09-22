@@ -142,7 +142,13 @@ func (r *SqsFifoReader) ackLoop() {
 ackLoop:
 	for {
 		select {
-		// TODO do a better job of graceful shutdown - process until pending acks is empty
+		case <-r.lt.Terminated():
+			// Process pending acks first, then break out of the loop
+			r.logger.Debug("AckLoop received graceful termination order - processing pending then breaking loop")
+			if err := r.ack(r.lt.Ctx); err != nil {
+				r.logger.Debug("Ack loop received kill order before processing of pending acks could complete")
+			}
+			break ackLoop
 		case <-r.lt.Killed():
 			break ackLoop
 		case <-t.C:
@@ -219,8 +225,15 @@ func (r *SqsFifoReader) nackLoop() {
 nackLoop:
 	for {
 		select {
-		// TODO do a better job of graceful shutdown - process until pending nacks is empty
+		case <-r.lt.Terminated():
+			// Process pending nacks first, then break out of the loop
+			r.logger.Debug("NackLoop received graceful termination order - processing pending then breaking loop")
+			if err := r.nack(r.lt.Ctx); err != nil {
+				r.logger.Debug("Nack loop received kill order before processing of pending nacks could complete")
+			}
+			break nackLoop
 		case <-r.lt.Killed():
+			r.logger.Debug("Nack loop received kill order - breaking loop")
 			break nackLoop
 		case <-t.C:
 			if err := r.nack(r.lt.Ctx); err != nil {
