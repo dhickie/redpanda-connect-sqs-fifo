@@ -7,6 +7,7 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/util"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
@@ -31,10 +32,10 @@ type SqsFifoInput struct {
 }
 
 // NewSqsFifoInput returns a new input object, ready for connecting to SQS
-func NewSqsFifoInput(conf *models.InputConfig, logger *service.Logger) *SqsFifoInput {
+func NewSqsFifoInput(conf *models.InputConfig, aconf *aws.Config, logger *service.Logger) *SqsFifoInput {
 	lf := util.NewLifetime()
 	return &SqsFifoInput{
-		reader:   reader.NewSqsFifoReader(conf, lf, logger),
+		reader:   reader.NewSqsFifoReader(conf, aconf, lf, logger),
 		ackChan:  make(chan *string),
 		nackChan: make(chan *string),
 		lt:       lf,

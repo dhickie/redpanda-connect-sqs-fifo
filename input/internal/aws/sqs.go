@@ -23,10 +23,11 @@ type SqsClient struct {
 }
 
 // NewSqsClient returns a new client using the provided configuration
-func NewSqsClient(conf models.InputConfig) (*SqsClient, error) {
+func NewSqsClient(conf *models.InputConfig, aconf *aws.Config) *SqsClient {
 	return &SqsClient{
-		client: sqs.NewFromConfig(*aws.NewConfig()),
-	}, nil
+		client: sqs.NewFromConfig(*aconf),
+		conf:   conf,
+	}
 }
 
 // SetMessageVisibility updates the visibility of between 1 and 10 messages to a time in the future.

@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
@@ -22,14 +23,14 @@ type SqsFifoReader struct {
 	pendingNack *list.List               // Messages that have had a negative acknowledgement by the runtime but not yet processed
 	nackLock    *sync.Mutex              // A lock for protecting the collection of pending nacks
 	nackCond    *util.AsyncCond          // For signalling the nackloop to process nacks
-	readCond    *util.AsyncCond          // For being signalled that there is capacity for more in-flight messages
+	readCond    *util.AsyncCond          // For being signalled that there is capacity to read more messages from the queue
 	conf        *models.InputConfig      // The configuration for the input
 	lt          *util.Lifetime           // Manages application lifetime and shutdown events
 	logger      *service.Logger          // For writing custom logs
 }
 
-func NewSqsFifoReader(conf *models.InputConfig, lt *util.Lifetime, logger *service.Logger) *SqsFifoReader {
-	client := &aws.SqsClient{}
+func NewSqsFifoReader(conf *models.InputConfig, aconf *awssdk.Config, lt *util.Lifetime, logger *service.Logger) *SqsFifoReader {
+	client := aws.NewSqsClient(conf, aconf)
 	readCond := util.NewAsyncCond()
 	readCond.Signal() // Start in a signalled state to start reading immediately
 

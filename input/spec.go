@@ -1,14 +1,17 @@
 package sqs_fifo
 
 import (
+	"context"
 	"dhickie/redpanda-connect-sqs-fifo/input/internal/models"
 
+	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
 // Input configuration fields
 const (
 	confFieldUrl                   = "url"
+	confFieldBaseEndpoint          = "base_endpoint"
 	confFieldMinReceiveBatchSize   = "min_receive_batch_size"
 	confFieldMaxReceiveBatchSize   = "max_receive_batch_size"
 	confFieldMaxInFlightMessages   = "max_in_flight_messages"
@@ -20,7 +23,19 @@ func inputConfigFromConnectConfig(cConfig *service.ParsedConfig) (*models.InputC
 	conf := &models.InputConfig{}
 	var err error
 
-	if conf.QueueUrl, err = cConfig.FieldString(confFieldUrl); err != nil {
+	queueUrl, err := cConfig.FieldURL(confFieldUrl)
+	if err != nil {
+		return nil, err
+	}
+	conf.QueueUrl = queueUrl.String()
+
+	baseEndpoint, err := cConfig.FieldURL(confFieldBaseEndpoint)
+	if err != nil {
+		return nil, err
+	}
+	conf.BaseEndpoint = baseEndpoint.String()
+
+	if conf.BaseEndpoint, err = cConfig.FieldString(confFieldUrl); err != nil {
 		return nil, err
 	}
 	if conf.MinReceiveBatchSize, err = cConfig.FieldInt(confFieldMinReceiveBatchSize); err != nil {
@@ -46,11 +61,11 @@ func sqsFifoInputSpec() *service.ConfigSpec {
 	return service.NewConfigSpec().
 		Stable().
 		Categories("Services", "AWS").
-		Summary(`Consume messages from a AWS FIFO SQS queue, preserving message ordering`).
+		Summary(`Consume messages from an AWS FIFO SQS queue, preserving message ordering`).
 		Description(`
 		== Credentials
 		
-		TODO fill out details on credentials
+		AWS credentials are loaded from all supported sources and resolved using the default credentials chain.
 		
 		== Metadata
 		
@@ -69,6 +84,11 @@ func sqsFifoInputSpec() *service.ConfigSpec {
 		Fields(
 			service.NewURLField(confFieldUrl).
 				Description("The URL of the SQS FIFO queue"),
+			service.NewURLField(confFieldBaseEndpoint).
+				Description("The base URL to use when connecting to AWS. Set this to connect to local mocking services like LocalStack and Floci").
+				ShortDescription("The base URL to use when connecting to AWS.").
+				Default("").
+				Advanced(),
 			service.NewIntField(confFieldMinReceiveBatchSize).
 				Description("The minimum batch size to use when receiving new messages. There must be at least this much free space in the buffer of in-flight messages before any attempt is made to fetch more.").
 				ShortDescription("The minimum batch size to use when receiving new messages.").
@@ -100,14 +120,20 @@ func sqsFifoInputSpec() *service.ConfigSpec {
 func init() {
 	service.MustRegisterInput("aws_sqs_fifo", sqsFifoInputSpec(),
 		func(cConf *service.ParsedConfig, mgr *service.Resources) (service.Input, error) {
-			// TODO build the actual AWS config
-			// aConf := aws.NewConfig()
 			iConf, err := inputConfigFromConnectConfig(cConf)
 
 			if err != nil {
 				return nil, err
 			}
 
-			return NewSqsFifoInput(iConf, mgr.Logger()), nil
+			aconf, err := config.LoadDefaultConfig(context.TODO(), func(o *config.LoadOptions) error {
+				if iConf.BaseEndpoint != "" {
+					o.BaseEndpoint = iConf.BaseEndpoint
+				}
+
+				return nil
+			})
+
+			return NewSqsFifoInput(iConf, &aconf, mgr.Logger()), nil
 		})
 }
