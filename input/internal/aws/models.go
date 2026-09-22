@@ -35,12 +35,12 @@ func newBatchItemSuccess(msgId string) *BatchItemSuccess {
 
 // BatchItemFailure represents a failed item in a batch operation
 type BatchItemFailure struct {
-	MsgId *string // The message ID the failure occurred for
+	MsgId       *string // The message ID the failure occurred for
+	ClientError bool    // Whether the error was the fault of the client
 
-	operation   *string // What operation was being attempted for the batch
-	batchId     *string // An ID for the batch in which this failure occurred
-	error       *string // The error that occurred
-	senderError bool    // Whether the error was the fault of the sender
+	operation *string // What operation was being attempted for the batch
+	batchId   *string // An ID for the batch in which this failure occurred
+	error     *string // The error that occurred
 }
 
 func newBatchItemFailure(
@@ -50,18 +50,18 @@ func newBatchItemFailure(
 	error *string,
 	senderError bool) *BatchItemFailure {
 	return &BatchItemFailure{
+		MsgId:       msgId,
+		ClientError: senderError,
 		operation:   &operation,
 		batchId:     &batchId,
-		MsgId:       msgId,
 		error:       error,
-		senderError: senderError,
 	}
 }
 
 // Sprint prints the error to a formatted string for logging
 func (f *BatchItemFailure) Sprint() string {
 	var blame string
-	if f.senderError {
+	if f.ClientError {
 		blame = "client"
 	} else {
 		blame = "server"

@@ -186,10 +186,13 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 				return nil
 			}
 
-			// TODO deal with case where delete fails because we no longer have the current receipt handle
 			for _, failure := range res.Failures {
 				r.logger.Error(failure.Sprint()) // Log failed batch members
-				failedIds = append(failedIds, failure.MsgId)
+				// If the failure was a client error, don't add it back to the pending ack queue
+				// It was probably trying to delete a message with an invalid receipt ID
+				if !failure.ClientError {
+					failedIds = append(failedIds, failure.MsgId)
+				}
 			}
 
 			for _, success := range res.Successes {
