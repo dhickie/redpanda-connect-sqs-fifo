@@ -2,16 +2,13 @@ package tracking
 
 import (
 	"context"
-	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/mocks"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/test"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
-	"strconv"
 	"testing"
 	"time"
-	"uuid"
 
-	"github.com/aws/aws-sdk-go-v2/service/sqs/types"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/mock"
 )
@@ -19,7 +16,7 @@ import (
 func TestAdd_ReturnsCorrectNumberOfInflightMessages_WhenAddingInitialMessages(t *testing.T) {
 	// Arrange
 	tracker := createTracker(nil, nil)
-	msgs := createMessages(3, 3)
+	msgs := test.CreateMessages(3, 3)
 
 	// Act
 	n := tracker.Add(msgs)
@@ -31,9 +28,9 @@ func TestAdd_ReturnsCorrectNumberOfInflightMessages_WhenAddingInitialMessages(t 
 func TestAdd_ReturnsCorrectNumberOfInflightMessages_WhenAddingAdditionalMessages(t *testing.T) {
 	// Arrange
 	tracker := createTracker(nil, nil)
-	msgs := createMessages(3, 3)
+	msgs := test.CreateMessages(3, 3)
 	tracker.Add(msgs)
-	msgs = createMessages(3, 3)
+	msgs = test.CreateMessages(3, 3)
 
 	// Act
 	n := tracker.Add(msgs)
@@ -45,7 +42,7 @@ func TestAdd_ReturnsCorrectNumberOfInflightMessages_WhenAddingAdditionalMessages
 func TestPeek_ReturnsCorrectMessage(t *testing.T) {
 	// Arrange
 	tracker := createTracker(nil, nil)
-	msgs := createMessages(3, 3)
+	msgs := test.CreateMessages(3, 3)
 	tracker.Add(msgs)
 	msg := msgs[5]
 
@@ -60,7 +57,7 @@ func TestPeek_ReturnsCorrectMessage(t *testing.T) {
 func TestFlush_ReturnsFirstMessageFromEachGroupOnly(t *testing.T) {
 	// Arrange
 	tracker := createTracker(nil, nil)
-	msgs := createMessages(2, 2)
+	msgs := test.CreateMessages(2, 2)
 	tracker.Add(msgs)
 
 	// Act
@@ -85,7 +82,7 @@ func TestFlush_ReturnsFirstMessageFromEachGroupOnly(t *testing.T) {
 func TestFlush_ReturnsNewMessageIfMessageIsAddedWhileWaiting(t *testing.T) {
 	// Arrange
 	tracker := createTracker(nil, nil)
-	msgs := createMessages(1, 1)
+	msgs := test.CreateMessages(1, 1)
 	deadline := time.Now().Add(20 * time.Millisecond)
 	ctx, cancel := context.WithDeadline(t.Context(), deadline)
 	defer cancel()
@@ -106,7 +103,7 @@ func TestFlush_ReturnsNewMessageIfMessageIsAddedWhileWaiting(t *testing.T) {
 func TestAck_RemovesMessageFromTracker(t *testing.T) {
 	// Arrange
 	tracker := createTracker(nil, nil)
-	msgs := createMessages(1, 1)
+	msgs := test.CreateMessages(1, 1)
 	tracker.Add(msgs)
 
 	// Act
@@ -124,7 +121,7 @@ func TestAck_RemovesMessageFromTracker(t *testing.T) {
 func TestAck_MakesNextMessageInGroupAvailable(t *testing.T) {
 	// Arrange
 	tracker := createTracker(nil, nil)
-	msgs := createMessages(1, 2)
+	msgs := test.CreateMessages(1, 2)
 	tracker.Add(msgs)
 
 	// Act
@@ -141,11 +138,11 @@ func TestAck_MakesNextMessageInGroupAvailable(t *testing.T) {
 
 func TestNack_RemovesEntireGroupFromTracker_WhenMaxAttemptsReached(t *testing.T) {
 	// Arrange
-	msgs := createMessages(1, 2)
+	msgs := test.CreateMessages(1, 2)
 	setup := func(c *mocks.MockSqsClient) {
 		c.
 			On("SetMessageVisibility", mock.Anything, mock.Anything, msgs).
-			Return(batchSuccessResult(msgs), nil)
+			Return(test.BatchSuccessResult(msgs), nil)
 	}
 	tracker := createTracker(nil, setup)
 	tracker.Add(msgs)
@@ -164,14 +161,14 @@ func TestNack_RemovesEntireGroupFromTracker_WhenMaxAttemptsReached(t *testing.T)
 }
 
 func TestNack_RetriesFailures_WhenMaxAttemptsNotReached(t *testing.T) {
-	msgs := createMessages(1, 2)
+	msgs := test.CreateMessages(1, 2)
 	setupConf := func(c *models.InputConfig) {
 		c.MaxProcessingAttempts = 2
 	}
 	setupClient := func(c *mocks.MockSqsClient) {
 		c.
 			On("SetMessageVisibility", mock.Anything, mock.Anything, msgs).
-			Return(batchSuccessResult(msgs), nil)
+			Return(test.BatchSuccessResult(msgs), nil)
 	}
 	tracker := createTracker(setupConf, setupClient)
 	tracker.Add(msgs)
@@ -182,8 +179,8 @@ func TestNack_RetriesFailures_WhenMaxAttemptsNotReached(t *testing.T) {
 	nErr := tracker.Nack(t.Context(), msgs[0].Msg.MessageId)
 	nFinal := tracker.Length()
 	mRetry, fErr2 := tracker.Flush(t.Context())
-	success, _, _ := tryWithTimeout(t.Context(), 10*time.Millisecond, func() (*models.SqsMessage, error) {
-		return tracker.Flush(t.Context())
+	success, _, _ := test.TryWithTimeout(t.Context(), 10*time.Millisecond, func(ctx context.Context) (*models.SqsMessage, error) {
+		return tracker.Flush(ctx)
 	})
 
 	// Assert
@@ -198,7 +195,7 @@ func TestNack_RetriesFailures_WhenMaxAttemptsNotReached(t *testing.T) {
 
 func TestLength_IncludesFlushedButNotYetAckedMessages(t *testing.T) {
 	// Arrange
-	msgs := createMessages(1, 2)
+	msgs := test.CreateMessages(1, 2)
 	tracker := createTracker(nil, nil)
 	tracker.Add(msgs)
 
@@ -215,7 +212,7 @@ func TestLength_IncludesFlushedButNotYetAckedMessages(t *testing.T) {
 
 func TestStart_StartsRefreshLoop(t *testing.T) {
 	// Arrange
-	msgs := createMessages(1, 1)
+	msgs := test.CreateMessages(1, 1)
 	calls := 0
 	setupConf := func(c *models.InputConfig) {
 		c.VisibilityTimeoutSeconds = 2
@@ -226,7 +223,7 @@ func TestStart_StartsRefreshLoop(t *testing.T) {
 			Run(func(args mock.Arguments) {
 				calls++
 			}).
-			Return(batchSuccessResult(msgs), nil)
+			Return(test.BatchSuccessResult(msgs), nil)
 	}
 	tracker := createTracker(setupConf, setupClient)
 	tracker.Add(msgs)
@@ -254,60 +251,4 @@ func createTracker(confFunc func(*models.InputConfig), clientFunc func(*mocks.Mo
 	lt := util.NewLifetime()
 
 	return NewMessageTracker(conf, sqs, lt, nil)
-}
-
-func createMessages(nGroups, nMsgs int) []*models.SqsMessage {
-	var msgs []*models.SqsMessage
-
-	for range nMsgs {
-		msgId := uuid.NewV4().String()
-
-		for j := range nGroups {
-			gId := strconv.Itoa(j)
-			rawMsg := types.Message{
-				Attributes: map[string]string{
-					"MessageGroupId": gId,
-				},
-				Body:      &msgId,
-				MessageId: &msgId,
-			}
-			msg := models.NewSqsMessage(rawMsg, 2)
-			msgs = append(msgs, msg)
-		}
-	}
-
-	return msgs
-}
-
-func batchSuccessResult(msgs []*models.SqsMessage) *aws.BatchOpResult {
-	ids := util.Select(msgs, func(m *models.SqsMessage) *aws.BatchItemSuccess {
-		return &aws.BatchItemSuccess{
-			MsgId: *m.Msg.MessageId,
-		}
-	})
-	return &aws.BatchOpResult{
-		Successes: ids,
-		Failures:  []*aws.BatchItemFailure{},
-	}
-}
-
-func tryWithTimeout[T any](parentCtx context.Context, timeout time.Duration, f func() (T, error)) (bool, *T, error) {
-	ctx, cancel := context.WithDeadline(parentCtx, time.Now().Add(timeout))
-	defer cancel()
-
-	vC := make(chan T, 1)
-	eC := make(chan error, 1)
-
-	go func() {
-		res, err := f()
-		vC <- res
-		eC <- err
-	}()
-
-	select {
-	case <-ctx.Done():
-		return false, nil, nil
-	case res := <-vC:
-		return true, &res, <-eC
-	}
 }
