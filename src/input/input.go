@@ -2,12 +2,13 @@ package sqs_fifo
 
 import (
 	"context"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
-	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/reader"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/reading"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/tracking"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
 	"time"
 
-	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
@@ -23,22 +24,25 @@ const (
 
 // SqsFifoInput is the top level object that interacts with the Connect SDK.
 type SqsFifoInput struct {
-	conf     *models.InputConfig   // The configuration for the input
-	reader   *reader.SqsFifoReader // Reads from the queue, and makes messages available for processing.
-	ackChan  chan *string          // Channel used to indicate a message has been processed successfully.
-	nackChan chan *string          // Channel used to indicate a message has not been processed successfully.
-	lt       *util.Lifetime        // Used to manage the lt of child goroutines
-	logger   *service.Logger       // Used to write custom logs
+	conf     *models.InputConfig    // The configuration for the input
+	reader   *reading.SqsFifoReader // Reads from the queue, and makes messages available for processing.
+	ackChan  chan *string           // Channel used to indicate a message has been processed successfully.
+	nackChan chan *string           // Channel used to indicate a message has not been processed successfully.
+	lt       *util.Lifetime         // Used to manage the lt of child goroutines
+	logger   *service.Logger        // Used to write custom logs
 }
 
 // NewSqsFifoInput returns a new input object, ready for connecting to SQS
-func NewSqsFifoInput(conf *models.InputConfig, aconf *aws.Config, logger *service.Logger) *SqsFifoInput {
-	lf := util.NewLifetime()
+func NewSqsFifoInput(sqsClient aws.ISqsClient, conf *models.InputConfig, logger *service.Logger) *SqsFifoInput {
+	lt := util.NewLifetime()
+	tracker := tracking.NewMessageTracker(conf, sqsClient, lt, logger)
+	reader := reading.NewSqsFifoReader(tracker, sqsClient, conf, lt, logger)
+
 	return &SqsFifoInput{
-		reader:   reader.NewSqsFifoReader(conf, aconf, lf, logger),
+		reader:   reader,
 		ackChan:  make(chan *string),
 		nackChan: make(chan *string),
-		lt:       lf,
+		lt:       lt,
 		logger:   logger,
 	}
 }
@@ -56,7 +60,7 @@ func (i *SqsFifoInput) ConnectionTest(ctx context.Context) service.ConnectionTes
 	return service.ConnectionTestSucceeded().AsList()
 }
 
-// Connect starts the input by starting the reader and ack/nack callback loop
+// Connect starts the input by starting the reading and ack/nack callback loop
 func (i *SqsFifoInput) Connect(ctx context.Context) error {
 	// Get the visibility timeout for the queue if we haven't got it already
 	if i.conf.VisibilityTimeoutSeconds == 0 {

@@ -22,6 +22,20 @@ type SqsClient struct {
 	conf   *models.InputConfig
 }
 
+// ISqsClient is the interface for any type providing access to the SQS API
+type ISqsClient interface {
+	SetMessageVisibility(
+		ctx context.Context,
+		newTimeoutSeconds int32,
+		msgs ...*models.SqsMessage) (*BatchOpResult, error)
+
+	ReceiveMessages(ctx context.Context, maxMsgs int) ([]*models.SqsMessage, error)
+
+	DeleteMessages(ctx context.Context, msgs []*models.SqsMessage) (*BatchOpResult, error)
+
+	GetQueueVisibilityTimeout(ctx context.Context) (int, error)
+}
+
 // NewSqsClient returns a new client using the provided configuration
 func NewSqsClient(conf *models.InputConfig, aconf *aws.Config) *SqsClient {
 	return &SqsClient{

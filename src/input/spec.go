@@ -2,6 +2,7 @@ package sqs_fifo
 
 import (
 	"context"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
 
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -126,7 +127,7 @@ func init() {
 				return nil, err
 			}
 
-			aconf, err := config.LoadDefaultConfig(context.TODO(), func(o *config.LoadOptions) error {
+			aConf, err := config.LoadDefaultConfig(context.TODO(), func(o *config.LoadOptions) error {
 				if iConf.BaseEndpoint != "" {
 					o.BaseEndpoint = iConf.BaseEndpoint
 				}
@@ -134,6 +135,7 @@ func init() {
 				return nil
 			})
 
-			return NewSqsFifoInput(iConf, &aconf, mgr.Logger()), nil
+			sqsClient := aws.NewSqsClient(iConf, &aConf)
+			return NewSqsFifoInput(sqsClient, iConf, mgr.Logger()), nil
 		})
 }

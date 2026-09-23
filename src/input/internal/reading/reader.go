@@ -1,4 +1,4 @@
-package reader
+package reading
 
 import (
 	"container/list"
@@ -10,33 +10,39 @@ import (
 	"sync"
 	"time"
 
-	awssdk "github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/redpanda-data/benthos/v4/public/service"
 )
 
 type SqsFifoReader struct {
-	client      *aws.SqsClient           // A client for the SQS API
-	tracker     *tracking.MessageTracker // Tracks all in-flight messages
-	pendingAck  *list.List               // Messages that have been acknowledged by the runtime but not yet deleted
-	ackLock     *sync.Mutex              // A lock for protecting the collection of pending acks
-	ackCond     *util.AsyncCond          // For signalling the ackloop to process acks
-	pendingNack *list.List               // Messages that have had a negative acknowledgement by the runtime but not yet processed
-	nackLock    *sync.Mutex              // A lock for protecting the collection of pending nacks
-	nackCond    *util.AsyncCond          // For signalling the nackloop to process nacks
-	readCond    *util.AsyncCond          // For being signalled that there is capacity to read more messages from the queue
-	conf        *models.InputConfig      // The configuration for the input
-	lt          *util.Lifetime           // Manages application lifetime and shutdown events
-	logger      *service.Logger          // For writing custom logs
+	client  aws.ISqsClient           // A client for the SQS API
+	tracker tracking.IMessageTracker // Tracks all in-flight messages
+
+	pendingAck  *list.List      // Messages that have been acknowledged by the runtime but not yet deleted
+	ackLock     *sync.Mutex     // A lock for protecting the collection of pending acks
+	ackCond     *util.AsyncCond // For signalling the ackloop to process acks
+	pendingNack *list.List      // Messages that have had a negative acknowledgement by the runtime but not yet processed
+	nackLock    *sync.Mutex     // A lock for protecting the collection of pending nacks
+	nackCond    *util.AsyncCond // For signalling the nackloop to process nacks
+	readCond    *util.AsyncCond // For being signalled that there is capacity to read more messages from the queue
+
+	conf   *models.InputConfig // The configuration for the input
+	lt     *util.Lifetime      // Manages application lifetime and shutdown events
+	logger *service.Logger     // For writing custom logs
 }
 
-func NewSqsFifoReader(conf *models.InputConfig, aconf *awssdk.Config, lt *util.Lifetime, logger *service.Logger) *SqsFifoReader {
-	client := aws.NewSqsClient(conf, aconf)
+func NewSqsFifoReader(
+	mTracker tracking.IMessageTracker,
+	sqsClient aws.ISqsClient,
+	conf *models.InputConfig,
+	lt *util.Lifetime,
+	logger *service.Logger) *SqsFifoReader {
+
 	readCond := util.NewAsyncCond()
 	readCond.Signal() // Start in a signalled state to start reading immediately
 
 	return &SqsFifoReader{
-		client:      client,
-		tracker:     tracking.NewMessageTracker(conf, client, lt, readCond, logger),
+		client:      sqsClient,
+		tracker:     mTracker,
 		pendingAck:  list.New(),
 		ackLock:     &sync.Mutex{},
 		ackCond:     util.NewAsyncCond(),
@@ -55,7 +61,7 @@ func (r *SqsFifoReader) GetQueueVisibilityTimeout(ctx context.Context) (int, err
 	return r.client.GetQueueVisibilityTimeout(ctx)
 }
 
-// Start starts the reader and begins populating the message queue
+// Start starts the reading and begins populating the message queue
 func (r *SqsFifoReader) Start() {
 	r.tracker.Start()
 

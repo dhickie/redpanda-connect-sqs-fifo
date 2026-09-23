@@ -22,7 +22,7 @@ type MessageTracker struct {
 	refreshQueue  *list.List                    // A time ordered list of all in-flight messages by their visibility expiry
 	refreshMap    map[string]*list.Element      // Map of message IDs to elements in the refresh queue
 	conf          *models.InputConfig           // The configuration for the input
-	sqs           *aws.SqsClient                // The SQS client
+	sqs           aws.ISqsClient                // The SQS client
 	m             *sync.RWMutex                 // The mutex used to provide thread safety
 	msgsAvailable *util.ContextCond             // Used to signal that messages are available to be flushed
 	lt            *util.Lifetime                // Manages application lifetime and shutdown events
@@ -30,13 +30,24 @@ type MessageTracker struct {
 	logger        *service.Logger               // For writing custom logs
 }
 
+// IMessageTracker is the interface for any type that provides tracking of in flight messages
+type IMessageTracker interface {
+	Start()
+	Add(msgs []*models.SqsMessage) int
+	Peek(id *string) (*models.SqsMessage, error)
+	Flush(ctx context.Context) (*models.SqsMessage, error)
+	Ack(id string)
+	Nack(ctx context.Context, ids ...*string) error
+	Length() int
+}
+
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
 func NewMessageTracker(
 	conf *models.InputConfig,
-	sqs *aws.SqsClient,
+	sqs aws.ISqsClient,
 	lt *util.Lifetime,
-	readCond *util.AsyncCond,
 	logger *service.Logger) *MessageTracker {
+
 	m := &sync.RWMutex{}
 	return &MessageTracker{
 		groups:        make(map[string]*groupTracker),
@@ -48,7 +59,7 @@ func NewMessageTracker(
 		m:             m,
 		msgsAvailable: util.NewContextCond(m),
 		lt:            lt,
-		readCond:      readCond,
+		readCond:      util.NewAsyncCond(),
 		logger:        logger,
 	}
 }
