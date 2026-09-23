@@ -54,6 +54,7 @@ func NewMessageTracker(
 		idMap:         make(map[string]*models.SqsMessage),
 		pendingFlush:  make([]*models.SqsMessage, 0, conf.MaxInFlightMessages),
 		refreshQueue:  list.New(),
+		refreshMap:    make(map[string]*list.Element),
 		conf:          conf,
 		sqs:           sqs,
 		m:             m,

@@ -8,6 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/service/sqs v1.52.0
 	github.com/redpanda-data/benthos/v4 v4.80.0
 	github.com/redpanda-data/connect/public/bundle/free/v4 v4.110.0
+	github.com/stretchr/testify v1.12.1
 )
 
 require (
@@ -352,7 +353,7 @@ require (
 	github.com/sourcegraph/conc v0.3.0 // indirect
 	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/spiffe/go-spiffe/v2 v2.7.0 // indirect
-	github.com/stretchr/testify v1.12.1 // indirect
+	github.com/stretchr/objx v0.5.3 // indirect
 	github.com/tetratelabs/wazero v1.12.1-0.20260714071631-236c2458ed22 // indirect
 	github.com/theparanoids/crypki v1.21.0 // indirect
 	github.com/tilinna/z85 v1.0.0 // indirect
