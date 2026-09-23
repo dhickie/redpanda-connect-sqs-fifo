@@ -2,9 +2,9 @@ package tracking
 
 import (
 	"context"
-	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/mocks"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/test"
+	mocks2 "dhickie/redpanda-connect-sqs-fifo/src/input/internal/test/mocks"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
 	"testing"
 	"time"
@@ -139,7 +139,7 @@ func TestAck_MakesNextMessageInGroupAvailable(t *testing.T) {
 func TestNack_RemovesEntireGroupFromTracker_WhenMaxAttemptsReached(t *testing.T) {
 	// Arrange
 	msgs := test.CreateMessages(1, 2)
-	setup := func(c *mocks.MockSqsClient) {
+	setup := func(c *mocks2.MockSqsClient) {
 		c.
 			On("SetMessageVisibility", mock.Anything, mock.Anything, msgs).
 			Return(test.BatchSuccessResult(msgs), nil)
@@ -165,7 +165,7 @@ func TestNack_RetriesFailures_WhenMaxAttemptsNotReached(t *testing.T) {
 	setupConf := func(c *models.InputConfig) {
 		c.MaxProcessingAttempts = 2
 	}
-	setupClient := func(c *mocks.MockSqsClient) {
+	setupClient := func(c *mocks2.MockSqsClient) {
 		c.
 			On("SetMessageVisibility", mock.Anything, mock.Anything, msgs).
 			Return(test.BatchSuccessResult(msgs), nil)
@@ -217,7 +217,7 @@ func TestStart_StartsRefreshLoop(t *testing.T) {
 	setupConf := func(c *models.InputConfig) {
 		c.VisibilityTimeoutSeconds = 2
 	}
-	setupClient := func(c *mocks.MockSqsClient) {
+	setupClient := func(c *mocks2.MockSqsClient) {
 		c.
 			On("SetMessageVisibility", mock.Anything, mock.Anything, msgs).
 			Run(func(args mock.Arguments) {
@@ -237,13 +237,13 @@ func TestStart_StartsRefreshLoop(t *testing.T) {
 	assert.Greater(t, calls, 0, "The SQS API should have been called to set the visibility deadline")
 }
 
-func createTracker(confFunc func(*models.InputConfig), clientFunc func(*mocks.MockSqsClient)) *MessageTracker {
-	conf := mocks.NewMockConfig()
+func createTracker(confFunc func(*models.InputConfig), clientFunc func(*mocks2.MockSqsClient)) *MessageTracker {
+	conf := mocks2.NewMockConfig()
 	if confFunc != nil {
 		confFunc(conf)
 	}
 
-	sqs := new(mocks.MockSqsClient)
+	sqs := new(mocks2.MockSqsClient)
 	if clientFunc != nil {
 		clientFunc(sqs)
 	}

@@ -2,9 +2,9 @@ package reading
 
 import (
 	"context"
-	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/mocks"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/test"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/test/mocks"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
 	"testing"
 	"time"
