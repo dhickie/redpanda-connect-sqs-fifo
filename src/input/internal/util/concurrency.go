@@ -27,6 +27,7 @@ func (c *ContextCond) Wait(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		c.l.Lock()
 		return ctx.Err()
 	case <-c.ch:
 		c.l.Lock()

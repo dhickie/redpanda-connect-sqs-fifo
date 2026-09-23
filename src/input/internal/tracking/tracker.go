@@ -201,7 +201,7 @@ func (t *MessageTracker) Nack(ctx context.Context, ids ...*string) error {
 		msg.AttemptNo++
 
 		// Retry - add it back to the end of pendingFlush
-		if t.conf.MaxProcessingAttempts == 0 || t.conf.MaxProcessingAttempts <= msg.AttemptNo {
+		if t.conf.MaxProcessingAttempts == 0 || msg.AttemptNo <= t.conf.MaxProcessingAttempts {
 			t.pendingFlush = append(t.pendingFlush, msg)
 			continue
 		}
