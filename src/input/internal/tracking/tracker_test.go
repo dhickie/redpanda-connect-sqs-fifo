@@ -213,6 +213,33 @@ func TestLength_IncludesFlushedButNotYetAckedMessages(t *testing.T) {
 	assert.Equal(t, 2, nFinal, "The final length should be 2")
 }
 
+func TestStart_StartsRefreshLoop(t *testing.T) {
+	// Arrange
+	msgs := createMessages(1, 1)
+	calls := 0
+	setupConf := func(c *models.InputConfig) {
+		c.VisibilityTimeoutSeconds = 2
+	}
+	setupClient := func(c *mocks.MockSqsClient) {
+		c.
+			On("SetMessageVisibility", mock.Anything, mock.Anything, msgs).
+			Run(func(args mock.Arguments) {
+				calls++
+			}).
+			Return(batchSuccessResult(msgs), nil)
+	}
+	tracker := createTracker(setupConf, setupClient)
+	tracker.Add(msgs)
+
+	// Act
+	tracker.Start()
+	<-time.After(2 * time.Second)
+
+	// Assert
+	assert.Less(t, time.Now(), msgs[0].Deadline, "The deadline should have been extended")
+	assert.Greater(t, calls, 0, "The SQS API should have been called to set the visibility deadline")
+}
+
 func createTracker(confFunc func(*models.InputConfig), clientFunc func(*mocks.MockSqsClient)) *MessageTracker {
 	conf := mocks.NewMockConfig()
 	if confFunc != nil {
@@ -244,7 +271,7 @@ func createMessages(nGroups, nMsgs int) []*models.SqsMessage {
 				Body:      &msgId,
 				MessageId: &msgId,
 			}
-			msg := models.NewSqsMessage(rawMsg, 30)
+			msg := models.NewSqsMessage(rawMsg, 2)
 			msgs = append(msgs, msg)
 		}
 	}
