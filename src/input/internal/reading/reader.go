@@ -32,12 +32,12 @@ type SqsFifoReader struct {
 
 func NewSqsFifoReader(
 	mTracker tracking.IMessageTracker,
+	readCond *util.AsyncCond,
 	sqsClient aws.ISqsClient,
 	conf *models.InputConfig,
 	lt *util.Lifetime,
 	logger *service.Logger) *SqsFifoReader {
 
-	readCond := util.NewAsyncCond()
 	readCond.Signal() // Start in a signalled state to start reading immediately
 
 	return &SqsFifoReader{

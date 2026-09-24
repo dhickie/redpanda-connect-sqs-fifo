@@ -35,8 +35,9 @@ type SqsFifoInput struct {
 // NewSqsFifoInput returns a new input object, ready for connecting to SQS
 func NewSqsFifoInput(sqsClient aws.ISqsClient, conf *models.InputConfig, logger *service.Logger) *SqsFifoInput {
 	lt := util.NewLifetime()
-	tracker := tracking.NewMessageTracker(conf, sqsClient, lt, logger)
-	reader := reading.NewSqsFifoReader(tracker, sqsClient, conf, lt, logger)
+	readCond := util.NewAsyncCond()
+	tracker := tracking.NewMessageTracker(conf, readCond, sqsClient, lt, logger)
+	reader := reading.NewSqsFifoReader(tracker, readCond, sqsClient, conf, lt, logger)
 
 	return &SqsFifoInput{
 		reader:   reader,

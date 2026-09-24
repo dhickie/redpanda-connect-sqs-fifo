@@ -44,6 +44,7 @@ type IMessageTracker interface {
 // NewMessageTracker returns a new message tracker using the provided configuration and SQS client
 func NewMessageTracker(
 	conf *models.InputConfig,
+	readCond *util.AsyncCond,
 	sqs aws.ISqsClient,
 	lt *util.Lifetime,
 	logger *service.Logger) *MessageTracker {
@@ -60,7 +61,7 @@ func NewMessageTracker(
 		m:             m,
 		msgsAvailable: util.NewContextCond(m),
 		lt:            lt,
-		readCond:      util.NewAsyncCond(),
+		readCond:      readCond,
 		logger:        logger,
 	}
 }

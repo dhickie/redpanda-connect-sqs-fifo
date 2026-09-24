@@ -12,19 +12,21 @@ func Until(ctx context.Context, f func(context.Context) (bool, error), timeout t
 	condCh := make(chan struct{}, 1)
 	errCh := make(chan error, 1)
 	go func() {
-		if t, err := f(tCtx); err == nil && t {
-			condCh <- struct{}{}
-			return
-		} else if err != nil {
-			errCh <- err
-			return
-		}
+		for {
+			if t, err := f(tCtx); err == nil && t {
+				condCh <- struct{}{}
+				return
+			} else if err != nil {
+				errCh <- err
+				return
+			}
 
-		select {
-		case <-tCtx.Done():
-			errCh <- tCtx.Err()
-			return
-		case <-time.After(100 * time.Millisecond):
+			select {
+			case <-tCtx.Done():
+				errCh <- tCtx.Err()
+				return
+			case <-time.After(10 * time.Millisecond):
+			}
 		}
 	}()
 

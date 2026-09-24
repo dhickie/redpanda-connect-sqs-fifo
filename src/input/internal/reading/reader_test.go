@@ -84,41 +84,52 @@ func TestReadLoop_PerformsRead_WhenTriggeredByReadCondition(t *testing.T) {
 	assert.EqualValues(t, msgs[0], msg, "The message should have been read")
 }
 
-func TestReadLoop_PerformsRead_WhenTriggeredByTimer(t *testing.T) {
+func TestReadLoop_PerformsRead_WhenTriggeredBySpareCapacity(t *testing.T) {
 	// Assemble
-	msgs := test.CreateMessagesWithDeadline(1, 1, 30)
+	initMsgs := test.CreateMessagesWithDeadline(1, 1, 30)
+	nextMsgs := test.CreateMessagesWithDeadline(1, 1, 30)
 	setupConf := func(c *models.InputConfig) {
-		c.MaxInFlightMessages = 2
+		c.MaxInFlightMessages = 1
 		c.MinReceiveBatchSize = 1
+		c.MaxPendingAcks = 1
 		c.VisibilityTimeoutSeconds = 30
 	}
 	setupClient := func(c *mocks.MockSqsClient) {
-		c.
-			On("ReceiveMessages", mock.Anything, mock.Anything).
-			Return(msgs, nil)
+		c.On("ReceiveMessages", mock.Anything, mock.Anything).Return(initMsgs, nil).Once()
+		c.On("ReceiveMessages", mock.Anything, mock.Anything).Return(nextMsgs, nil).Once()
+		c.On("DeleteMessages", mock.Anything, mock.Anything).Return(test.BatchSuccessResult(initMsgs), nil)
 	}
 	reader := createReader(setupConf, setupClient)
-
-	// Act
-	reader.Start()
-	var msg *models.SqsMessage
-	var err error
-	waitFunc := func(ctx context.Context) (bool, error) {
-		if _, iErr := reader.Next(ctx); iErr != nil { // Read the initial message read immediately after starting
-			return false, iErr
-		}
-		if msg, err = reader.Next(ctx); err != nil { // Read the second message from the timer
-			return false, err
-		}
-
-		return msg != nil, nil
+	lengthWaitFunc := func(ctx context.Context) (bool, error) {
+		l := reader.tracker.Length()
+		return l == 1, nil
 	}
-	_ = wait.Until(t.Context(), waitFunc, 2*time.Second) // Read the initial message
-	reader.lt.Kill()
+	var nextMsg *models.SqsMessage
+	var msgErr error
+	msgWaitFunc := func(ctx context.Context) (bool, error) {
+		nextMsg, msgErr = reader.Next(ctx)
+		if msgErr != nil {
+			return false, msgErr
+		}
 
-	// Act
-	assert.NoError(t, err, "No error should have been returned from Next()")
-	assert.EqualValues(t, msgs[0], msg, "The message should have been read")
+		return nextMsg != nil, nil
+	}
+
+	// Act & Assert
+	reader.Start()
+
+	wErr := wait.Until(t.Context(), lengthWaitFunc, 50*time.Millisecond)
+	assert.NoError(t, wErr, "No error should have been returned when waiting for the initial message to be available")
+
+	initMsg, iErr := reader.Next(t.Context()) // Read the initial message
+	assert.NoError(t, iErr, "No error should have been returned when reading the initial message")
+	reader.Ack(initMsg.Msg.MessageId) // Ack the initial message
+
+	wErr = wait.Until(t.Context(), msgWaitFunc, 50*time.Millisecond) // Wait until a new message is available
+	assert.NoError(t, wErr, "A second message should have been available")
+	assert.EqualValues(t, nextMsgs[0], nextMsg, "The second message should have been read after the initial message was acked")
+
+	reader.lt.Kill()
 }
 
 func createReader(
@@ -136,8 +147,9 @@ func createReader(
 	}
 
 	lt := util.NewLifetime()
-	tracker := tracking.NewMessageTracker(config, client, lt, nil)
-	return NewSqsFifoReader(tracker, client, config, lt, nil)
+	readCond := util.NewAsyncCond()
+	tracker := tracking.NewMessageTracker(config, readCond, client, lt, nil)
+	return NewSqsFifoReader(tracker, readCond, client, config, lt, nil)
 }
 
 func randomId() *string {
