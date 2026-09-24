@@ -22,20 +22,23 @@ func TestAck_SignalsAckLoopToRun_WhenHittingMaxPendingAcks(t *testing.T) {
 		config.MaxPendingAcks = 2
 	}
 	reader := createReader(setupConf, nil)
-	waitFunc := func(ctx context.Context) (*struct{}, error) {
+	waitFunc := func(ctx context.Context) (bool, error) {
 		err := reader.ackCond.Wait(ctx)
-		return nil, err
+		if err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 
 	// Act
 	reader.Ack(randomId())
-	s1, _, _ := test.TryWithTimeout(t.Context(), 10*time.Millisecond, waitFunc)
+	err1 := wait.Until(t.Context(), waitFunc, 10*time.Millisecond)
 	reader.Ack(randomId())
-	s2, _, _ := test.TryWithTimeout(t.Context(), 10*time.Millisecond, waitFunc)
+	err2 := wait.Until(t.Context(), waitFunc, 10*time.Millisecond)
 
 	// Assert
-	assert.Equal(t, false, s1, "The ack loop should not have been signalled")
-	assert.Equal(t, true, s2, "The ack loop should have been signalled")
+	assert.Error(t, err1, "The ack loop should not have been signalled")
+	assert.NoError(t, err2, "The ack loop should have been signalled")
 }
 
 func TestNack_SignalsNackLoopToRun_WhenHittingMaxPendingNacks(t *testing.T) {
@@ -44,20 +47,24 @@ func TestNack_SignalsNackLoopToRun_WhenHittingMaxPendingNacks(t *testing.T) {
 		config.MaxPendingAcks = 2
 	}
 	reader := createReader(setupConf, nil)
-	waitFunc := func(ctx context.Context) (*struct{}, error) {
+	waitFunc := func(ctx context.Context) (bool, error) {
 		err := reader.nackCond.Wait(ctx)
-		return nil, err
+		if err != nil {
+			return false, err
+		}
+
+		return true, nil
 	}
 
 	// Act
 	reader.Nack(randomId())
-	s1, _, _ := test.TryWithTimeout(t.Context(), 10*time.Millisecond, waitFunc)
+	err1 := wait.Until(t.Context(), waitFunc, 10*time.Millisecond)
 	reader.Nack(randomId())
-	s2, _, _ := test.TryWithTimeout(t.Context(), 10*time.Millisecond, waitFunc)
+	err2 := wait.Until(t.Context(), waitFunc, 10*time.Millisecond)
 
 	// Assert
-	assert.Equal(t, false, s1, "The nack loop should not have been signalled")
-	assert.Equal(t, true, s2, "The nack loop should have been signalled")
+	assert.Error(t, err1, "The nack loop should not have been signalled")
+	assert.NoError(t, err2, "The nack loop should have been signalled")
 }
 
 func TestReadLoop_PerformsRead_WhenTriggeredByReadCondition(t *testing.T) {

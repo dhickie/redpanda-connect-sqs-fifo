@@ -5,6 +5,7 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/test"
 	mocks2 "dhickie/redpanda-connect-sqs-fifo/src/input/internal/test/mocks"
+	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/test/wait"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
 	"testing"
 	"time"
@@ -172,6 +173,14 @@ func TestNack_RetriesFailures_WhenMaxAttemptsNotReached(t *testing.T) {
 	}
 	tracker := createTracker(setupConf, setupClient)
 	tracker.Add(msgs)
+	flushFunc := func(ctx context.Context) (bool, error) {
+		_, err := tracker.Flush(ctx)
+		if err != nil {
+			return false, err
+		}
+
+		return true, nil
+	}
 
 	// Act
 	nInit := tracker.Length()
@@ -179,9 +188,7 @@ func TestNack_RetriesFailures_WhenMaxAttemptsNotReached(t *testing.T) {
 	nErr := tracker.Nack(t.Context(), msgs[0].Msg.MessageId)
 	nFinal := tracker.Length()
 	mRetry, fErr2 := tracker.Flush(t.Context())
-	success, _, _ := test.TryWithTimeout(t.Context(), 10*time.Millisecond, func(ctx context.Context) (*models.SqsMessage, error) {
-		return tracker.Flush(ctx)
-	})
+	fErr3 := wait.Until(t.Context(), flushFunc, 10*time.Millisecond)
 
 	// Assert
 	assert.Equal(t, 2, nInit, "The initial length should be 2")
@@ -190,7 +197,7 @@ func TestNack_RetriesFailures_WhenMaxAttemptsNotReached(t *testing.T) {
 	assert.Equal(t, 2, nFinal, "The message should be retried after nacking")
 	assert.EqualValues(t, msgs[0], mRetry, "The initial message should be front of the queue after nacking")
 	assert.NoError(t, fErr2, "No error should be returned when flushing the initial message again")
-	assert.Equal(t, false, success, "The second message shouldn't be returned while the initial message is still in flight")
+	assert.Error(t, fErr3, "The second message shouldn't be returned while the initial message is still in flight")
 }
 
 func TestLength_IncludesFlushedButNotYetAckedMessages(t *testing.T) {
@@ -249,6 +256,6 @@ func createTracker(confFunc func(*models.InputConfig), clientFunc func(*mocks2.M
 	}
 
 	lt := util.NewLifetime()
-
-	return NewMessageTracker(conf, sqs, lt, nil)
+	readCond := util.NewAsyncCond()
+	return NewMessageTracker(conf, readCond, sqs, lt, nil)
 }

@@ -1,7 +1,6 @@
 package test
 
 import (
-	"context"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
@@ -55,30 +54,5 @@ func BatchSuccessResult(msgs []*models.SqsMessage) *aws.BatchOpResult {
 	return &aws.BatchOpResult{
 		Successes: ids,
 		Failures:  []*aws.BatchItemFailure{},
-	}
-}
-
-func TryWithTimeout[T any](parentCtx context.Context, timeout time.Duration, f func(context.Context) (T, error)) (bool, *T, error) {
-	ctx, cancel := context.WithDeadline(parentCtx, time.Now().Add(timeout))
-	defer cancel()
-
-	vC := make(chan T, 1)
-	eC := make(chan error, 1)
-
-	go func() {
-		res, err := f(ctx)
-		if ctx.Err() != nil {
-			return
-		}
-
-		vC <- res
-		eC <- err
-	}()
-
-	select {
-	case <-ctx.Done():
-		return false, nil, nil
-	case res := <-vC:
-		return true, &res, <-eC
 	}
 }
