@@ -6,22 +6,51 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/test"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/test/mocks"
+	"fmt"
 	"math/rand/v2"
+	"strconv"
+	"time"
+
+	"testing"
 
 	"github.com/stretchr/testify/mock"
 )
 
 const (
-	NumMessages = 1000
+	NumMessages = 100
 	MinPerGroup = 1
 	MaxPerGroup = 10
 )
 
 var testData []*models.SqsMessage
+var nextMessageIndex int = 0
 
 func TestInput_UnderHighLoad(t *testing.T) {
-	// Setup test data
 	generateTestData()
+	input := createStressTestInput()
+	cErr := input.Connect(t.Context())
+	if cErr != nil {
+		t.Error(cErr)
+	}
+	defer input.Close(t.Context())
+
+	t.Log("Starting")
+	start := time.Now()
+	for i := range NumMessages {
+		_, ackFunc, rErr := input.Read(t.Context())
+		if rErr != nil {
+			t.Fatal(rErr)
+		}
+
+		aErr := ackFunc(t.Context(), nil)
+		if aErr != nil {
+			t.Fatal(aErr)
+		}
+		t.Log("Processed msg " + strconv.Itoa(i) + " of " + strconv.Itoa(NumMessages) + " messages")
+	}
+	elapsed := time.Since(start)
+	fmt.Println("Total time: " + elapsed.String())
+	fmt.Println("Avg time per msg: " + (elapsed / NumMessages).String())
 }
 
 func generateTestData() {
@@ -33,7 +62,7 @@ func generateTestData() {
 			nMsgs = NumMessages - len(testData)
 		}
 
-		testData = append(testData, test.CreateMessages(1, nMsgs))
+		testData = append(testData, test.CreateMessages(1, nMsgs)...)
 
 		if len(testData) == NumMessages {
 			break
@@ -45,16 +74,27 @@ func randRange(min, max int) int {
 	return min + rand.IntN(max-min)
 }
 
-func createInput(confFunc func(*models.InputConfig), sqsFunc func(*mocks.MockSqsClient)) *SqsFifoInput {
-	config := mocks.NewMockConfig()
-	if confFunc != nil {
-		confFunc(config)
+func createStressTestInput() *SqsFifoInput {
+	config := &models.InputConfig{
+		QueueUrl:                 "",
+		BaseEndpoint:             "",
+		VisibilityTimeoutSeconds: 30,
+		MinReceiveBatchSize:      5,
+		MaxReceiveBatchSize:      10,
+		MaxInFlightMessages:      30,
+		MaxProcessingAttempts:    3,
+		MaxPendingAcks:           1,
 	}
 
 	var rCall *mock.Call
 	rCallback := func(args mock.Arguments) {
 		n := args.Int(1)
-		nextMsgs := test.CreateMessages(1, n)
+		remaining := len(testData) - nextMessageIndex
+		if n > remaining {
+			n = remaining
+		}
+		nextMsgs := testData[nextMessageIndex : nextMessageIndex+n]
+		nextMessageIndex += n
 		rCall.ReturnArguments = mock.Arguments{nextMsgs, nil}
 	}
 	var dCall *mock.Call
@@ -74,10 +114,6 @@ func createInput(confFunc func(*models.InputConfig), sqsFunc func(*mocks.MockSqs
 	dCall = client.On("DeleteMessages", mock.Anything, mock.Anything).Run(dCallback).Return(nil, nil)
 	vCall = client.On("SetMessageVisibility", mock.Anything, mock.Anything, mock.Anything).Run(vCallback).Return(nil, nil)
 	client.On("GetQueueVisibilityTimeout", mock.Anything).Return(30, nil)
-
-	if sqsFunc != nil {
-		sqsFunc(client)
-	}
 
 	return NewSqsFifoInput(client, config, nil)
 }

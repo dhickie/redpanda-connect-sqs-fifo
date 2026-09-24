@@ -24,7 +24,6 @@ func NewLifetime() *Lifetime {
 		stopped: make(chan struct{}, 1),
 		wg:      sync.WaitGroup{},
 	}
-	go l.wait()
 	return &l
 }
 
@@ -62,6 +61,12 @@ func (l *Lifetime) Terminated() chan struct{} {
 // work should cease immediately
 func (l *Lifetime) Killed() chan struct{} {
 	return l.sigkill
+}
+
+// StartStopListener starts a goroutine that signals when all registered subroutines have finished after a terminate or
+// kill order
+func (l *Lifetime) StartStopListener() {
+	go l.wait()
 }
 
 // Runs in a goroutine to signal the Stopped channel when all processes have completed shutdown.

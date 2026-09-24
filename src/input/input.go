@@ -80,6 +80,8 @@ func (i *SqsFifoInput) Connect(ctx context.Context) error {
 	wg.Go(i.callbackLoop)
 	i.logger.Debug("Ack callback loop started")
 
+	i.lt.StartStopListener()
+
 	return nil
 }
 
