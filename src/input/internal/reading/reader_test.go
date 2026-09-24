@@ -84,6 +84,7 @@ func TestReadLoop_PerformsRead_WhenTriggeredByReadCondition(t *testing.T) {
 	assert.EqualValues(t, msgs[0], msg, "The message should have been read")
 }
 
+// This also tests the ack loop
 func TestReadLoop_PerformsRead_WhenTriggeredBySpareCapacity(t *testing.T) {
 	// Assemble
 	initMsgs := test.CreateMessagesWithDeadline(1, 1, 30)
@@ -128,6 +129,45 @@ func TestReadLoop_PerformsRead_WhenTriggeredBySpareCapacity(t *testing.T) {
 	wErr = wait.Until(t.Context(), msgWaitFunc, 50*time.Millisecond) // Wait until a new message is available
 	assert.NoError(t, wErr, "A second message should have been available")
 	assert.EqualValues(t, nextMsgs[0], nextMsg, "The second message should have been read after the initial message was acked")
+
+	reader.lt.Kill()
+}
+
+func TestNackLoop_PerformsNack_WhenHittingMaxPendingNacks(t *testing.T) {
+	// Assemble
+	msgs := test.CreateMessagesWithDeadline(1, 1, 30)
+	setupConf := func(c *models.InputConfig) {
+		c.MaxInFlightMessages = 1
+		c.MinReceiveBatchSize = 1
+		c.MaxPendingAcks = 1
+		c.MaxProcessingAttempts = 1
+		c.VisibilityTimeoutSeconds = 30
+	}
+	setupClient := func(c *mocks.MockSqsClient) {
+		c.On("ReceiveMessages", mock.Anything, mock.Anything).Return(msgs, nil).Once()
+		c.On("ReceiveMessages", mock.Anything, mock.Anything).Return([]*models.SqsMessage{}, nil)
+		c.On("SetMessageVisibility", mock.Anything, mock.Anything, mock.Anything).Return(test.BatchSuccessResult(msgs), nil)
+	}
+	reader := createReader(setupConf, setupClient)
+	lengthWaitFunc := func(expectedLength int) func(context.Context) (bool, error) {
+		return func(ctx context.Context) (bool, error) {
+			l := reader.tracker.Length()
+			return l == expectedLength, nil
+		}
+	}
+
+	// Act & Assert
+	reader.Start()
+
+	wErr := wait.Until(t.Context(), lengthWaitFunc(1), 50*time.Millisecond)
+	assert.NoError(t, wErr, "No error should have been returned when waiting for the initial message to be available")
+
+	initMsg, iErr := reader.Next(t.Context()) // Read the initial message
+	assert.NoError(t, iErr, "No error should have been returned when reading the initial message")
+	reader.Nack(initMsg.Msg.MessageId) // Nack the initial message
+
+	wErr = wait.Until(t.Context(), lengthWaitFunc(0), 50*time.Millisecond) // Wait for the number of in-flight messages to hit 0
+	assert.NoError(t, wErr, "No second message should have been available")
 
 	reader.lt.Kill()
 }

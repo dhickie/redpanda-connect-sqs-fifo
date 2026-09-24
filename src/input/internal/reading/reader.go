@@ -65,10 +65,11 @@ func (r *SqsFifoReader) GetQueueVisibilityTimeout(ctx context.Context) (int, err
 func (r *SqsFifoReader) Start() {
 	r.tracker.Start()
 
-	wg := r.lt.Register(2)
+	wg := r.lt.Register(3)
 	wg.Go(r.readLoop)
 	wg.Go(r.ackLoop)
-	r.logger.Debug("Read and ack loops started")
+	wg.Go(r.nackLoop)
+	r.logger.Debug("Read, ack & nack loops started")
 }
 
 // Next returns the next message available for processing
@@ -245,7 +246,7 @@ nackLoop:
 				r.logger.Debug("Nack loop received kill order - breaking loop")
 				break nackLoop
 			}
-		case <-r.ackCond.WaitChan():
+		case <-r.nackCond.WaitChan():
 			if err := r.nack(r.lt.Ctx); err != nil {
 				r.logger.Debug("Nack loop received kill order - breaking loop")
 				break nackLoop
