@@ -40,6 +40,7 @@ func NewSqsFifoInput(sqsClient aws.ISqsClient, conf *models.InputConfig, logger 
 	reader := reading.NewSqsFifoReader(tracker, readCond, sqsClient, conf, lt, logger)
 
 	return &SqsFifoInput{
+		conf:     conf,
 		reader:   reader,
 		ackChan:  make(chan *string),
 		nackChan: make(chan *string),

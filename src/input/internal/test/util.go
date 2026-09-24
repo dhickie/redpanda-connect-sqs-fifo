@@ -4,7 +4,6 @@ import (
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/aws"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/models"
 	"dhickie/redpanda-connect-sqs-fifo/src/input/internal/util"
-	"strconv"
 	"time"
 	"uuid"
 
@@ -13,18 +12,24 @@ import (
 
 func CreateMessages(nGroups, nMsgs int) []*models.SqsMessage {
 	var msgs []*models.SqsMessage
+	gIds := make([]string, 0, nGroups)
+	for range nGroups {
+		gIds = append(gIds, uuid.New().String())
+	}
 
 	for range nMsgs {
 		msgId := uuid.NewV4().String()
 
 		for j := range nGroups {
-			gId := strconv.Itoa(j)
+			gId := gIds[j]
+			receiptHandle := uuid.New().String()
 			rawMsg := types.Message{
 				Attributes: map[string]string{
 					"MessageGroupId": gId,
 				},
-				Body:      &msgId,
-				MessageId: &msgId,
+				Body:          &msgId,
+				MessageId:     &msgId,
+				ReceiptHandle: &receiptHandle,
 			}
 			msg := models.NewSqsMessage(rawMsg, 2)
 			msgs = append(msgs, msg)

@@ -169,6 +169,12 @@ func (t *MessageTracker) Ack(id string) {
 	if next != nil {
 		// Add the next message to the queue if there is one
 		t.pendingFlush = append(t.pendingFlush, next)
+
+		// If the queue was empty before this message was added, a reader thread might be waiting for
+		// a signal that a new message is available
+		if len(t.pendingFlush) == 1 {
+			t.msgsAvailable.Signal()
+		}
 	} else {
 		// Delete the group from the map since it is now empty
 		delete(t.groups, gId)
