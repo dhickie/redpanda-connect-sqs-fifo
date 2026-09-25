@@ -1,3 +1,5 @@
+//go:build unit
+
 package tracking
 
 import (
@@ -237,7 +239,10 @@ func TestStart_StartsRefreshLoop(t *testing.T) {
 
 	// Act
 	tracker.Start()
+	tracker.lt.StartStopListener()
 	<-time.After(2 * time.Second)
+	tracker.lt.Kill()
+	<-tracker.lt.Stopped()
 
 	// Assert
 	assert.Less(t, time.Now(), msgs[0].Deadline, "The deadline should have been extended")

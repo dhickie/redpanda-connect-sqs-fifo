@@ -1,3 +1,5 @@
+//go:build unit
+
 package reading
 
 import (
@@ -82,8 +84,10 @@ func TestReadLoop_PerformsRead_WhenTriggeredByReadCondition(t *testing.T) {
 
 	// Act
 	reader.Start()
+	reader.lt.StartStopListener()
 	reader.readCond.Signal()
 	reader.lt.Kill()
+	<-reader.lt.Stopped()
 	msg, err := reader.Next(t.Context())
 
 	// Act
@@ -125,6 +129,7 @@ func TestReadLoop_PerformsRead_WhenTriggeredBySpareCapacity(t *testing.T) {
 
 	// Act & Assert
 	reader.Start()
+	reader.lt.StartStopListener()
 
 	wErr := wait.Until(t.Context(), lengthWaitFunc, 50*time.Millisecond)
 	assert.NoError(t, wErr, "No error should have been returned when waiting for the initial message to be available")
@@ -138,6 +143,7 @@ func TestReadLoop_PerformsRead_WhenTriggeredBySpareCapacity(t *testing.T) {
 	assert.EqualValues(t, nextMsgs[0], nextMsg, "The second message should have been read after the initial message was acked")
 
 	reader.lt.Kill()
+	<-reader.lt.Stopped()
 }
 
 func TestNackLoop_PerformsNack_WhenHittingMaxPendingNacks(t *testing.T) {
@@ -165,6 +171,7 @@ func TestNackLoop_PerformsNack_WhenHittingMaxPendingNacks(t *testing.T) {
 
 	// Act & Assert
 	reader.Start()
+	reader.lt.StartStopListener()
 
 	wErr := wait.Until(t.Context(), lengthWaitFunc(1), 50*time.Millisecond)
 	assert.NoError(t, wErr, "No error should have been returned when waiting for the initial message to be available")
@@ -177,6 +184,7 @@ func TestNackLoop_PerformsNack_WhenHittingMaxPendingNacks(t *testing.T) {
 	assert.NoError(t, wErr, "No second message should have been available")
 
 	reader.lt.Kill()
+	<-reader.lt.Stopped()
 }
 
 func createReader(
