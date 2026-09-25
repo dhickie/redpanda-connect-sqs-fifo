@@ -32,7 +32,7 @@ type MessageTracker struct {
 
 // IMessageTracker is the interface for any type that provides tracking of in flight messages
 type IMessageTracker interface {
-	Start()
+	RegisterLoops()
 	Add(msgs []*models.SqsMessage) int
 	Peek(id *string) (*models.SqsMessage, error)
 	Flush(ctx context.Context) (*models.SqsMessage, error)
@@ -66,11 +66,10 @@ func NewMessageTracker(
 	}
 }
 
-// Start starts the message tracker by starting the visibility refresh loop
-func (t *MessageTracker) Start() {
-	wg := t.lt.Register(1)
-	wg.Go(t.refreshLoop)
-	t.logger.Debug("Visibility deadline refresh loop started")
+// RegisterLoops registers the refresh loop with the application lifetime, so that it can be started with the other loops
+func (t *MessageTracker) RegisterLoops() {
+	t.lt.Register(t.refreshLoop)
+	t.logger.Debug("Visibility deadline refresh loop registered")
 }
 
 // Add adds a collection of messages to the tracker.
@@ -291,22 +290,22 @@ func (t *MessageTracker) cleanupMessages(msgs ...*models.SqsMessage) {
 }
 
 // refreshLoop checks for any messages requiring a refresh of their visibility timeout
-func (t *MessageTracker) refreshLoop() {
+func (t *MessageTracker) refreshLoop(ltHandle util.ILifetimeHandle) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 
 refreshLoop:
 	for {
 		select {
-		case <-t.lt.Terminated():
+		case <-ltHandle.Terminated():
 			t.logger.Debug("Refresh loop received graceful termination order - resetting visibility")
-			t.resetVisibility(t.lt.Ctx)
+			t.resetVisibility(ltHandle.KillContext())
 			break refreshLoop
-		case <-t.lt.Killed():
+		case <-ltHandle.Killed():
 			t.logger.Debug("Refresh loop received kill order - breaking loop")
 			break refreshLoop
 		case <-ticker.C:
-			t.refreshVisibility(t.lt.Ctx)
+			t.refreshVisibility(ltHandle.KillContext())
 		}
 	}
 }

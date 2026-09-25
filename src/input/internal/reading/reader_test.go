@@ -76,15 +76,14 @@ func TestReadLoop_PerformsRead_WhenTriggeredByReadCondition(t *testing.T) {
 		c.MaxInFlightMessages = 1
 	}
 	setupClient := func(c *mocks.MockSqsClient) {
-		c.
-			On("ReceiveMessages", mock.Anything, mock.Anything).
-			Return(msgs, nil)
+		c.On("ReceiveMessages", mock.Anything, mock.Anything).Return(msgs, nil)
+		c.On("SetMessageVisibility", mock.Anything, mock.Anything, mock.Anything).Return(test.BatchSuccessResult(msgs), nil)
 	}
 	reader := createReader(setupConf, setupClient)
 
 	// Act
-	reader.Start()
-	reader.lt.StartStopListener()
+	reader.RegisterLoops()
+	reader.lt.Start()
 	reader.readCond.Signal()
 	reader.lt.Kill()
 	<-reader.lt.Stopped()
@@ -128,8 +127,8 @@ func TestReadLoop_PerformsRead_WhenTriggeredBySpareCapacity(t *testing.T) {
 	}
 
 	// Act & Assert
-	reader.Start()
-	reader.lt.StartStopListener()
+	reader.RegisterLoops()
+	reader.lt.Start()
 
 	wErr := wait.Until(t.Context(), lengthWaitFunc, 50*time.Millisecond)
 	assert.NoError(t, wErr, "No error should have been returned when waiting for the initial message to be available")
@@ -170,8 +169,8 @@ func TestNackLoop_PerformsNack_WhenHittingMaxPendingNacks(t *testing.T) {
 	}
 
 	// Act & Assert
-	reader.Start()
-	reader.lt.StartStopListener()
+	reader.RegisterLoops()
+	reader.lt.Start()
 
 	wErr := wait.Until(t.Context(), lengthWaitFunc(1), 50*time.Millisecond)
 	assert.NoError(t, wErr, "No error should have been returned when waiting for the initial message to be available")
@@ -201,7 +200,7 @@ func createReader(
 		setupConf(config)
 	}
 
-	lt := util.NewLifetime()
+	lt := util.NewLifetime(nil)
 	readCond := util.NewAsyncCond()
 	tracker := tracking.NewMessageTracker(config, readCond, client, lt, nil)
 	return NewSqsFifoReader(tracker, readCond, client, config, lt, nil)

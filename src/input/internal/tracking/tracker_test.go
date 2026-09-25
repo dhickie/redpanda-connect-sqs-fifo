@@ -238,8 +238,8 @@ func TestStart_StartsRefreshLoop(t *testing.T) {
 	tracker.Add(msgs)
 
 	// Act
-	tracker.Start()
-	tracker.lt.StartStopListener()
+	tracker.RegisterLoops()
+	tracker.lt.Start()
 	<-time.After(2 * time.Second)
 	tracker.lt.Kill()
 	<-tracker.lt.Stopped()
@@ -260,7 +260,7 @@ func createTracker(confFunc func(*models.InputConfig), clientFunc func(*mocks2.M
 		clientFunc(sqs)
 	}
 
-	lt := util.NewLifetime()
+	lt := util.NewLifetime(nil)
 	readCond := util.NewAsyncCond()
 	return NewMessageTracker(conf, readCond, sqs, lt, nil)
 }

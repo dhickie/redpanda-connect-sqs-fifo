@@ -34,7 +34,7 @@ type SqsFifoInput struct {
 
 // NewSqsFifoInput returns a new input object, ready for connecting to SQS
 func NewSqsFifoInput(sqsClient aws.ISqsClient, conf *models.InputConfig, logger *service.Logger) *SqsFifoInput {
-	lt := util.NewLifetime()
+	lt := util.NewLifetime(logger)
 	readCond := util.NewAsyncCond()
 	tracker := tracking.NewMessageTracker(conf, readCond, sqsClient, lt, logger)
 	reader := reading.NewSqsFifoReader(tracker, readCond, sqsClient, conf, lt, logger)
@@ -74,13 +74,13 @@ func (i *SqsFifoInput) Connect(ctx context.Context) error {
 		i.conf.VisibilityTimeoutSeconds = tOut
 	}
 
-	i.reader.Start()
+	i.reader.RegisterLoops()
 
-	wg := i.lt.Register(1)
-	wg.Go(i.callbackLoop)
-	i.logger.Debug("Ack callback loop started")
+	i.lt.Register(i.callbackLoop)
+	i.logger.Debug("Ack callback loop registered")
 
-	i.lt.StartStopListener()
+	i.lt.Start()
+	i.logger.Debug("Loops started")
 
 	return nil
 }
@@ -165,7 +165,7 @@ func (i *SqsFifoInput) Close(ctx context.Context) error {
 }
 
 // Processes Acks and Nacks from the pipeline and hands them over to their respective processing loops
-func (i *SqsFifoInput) callbackLoop() {
+func (i *SqsFifoInput) callbackLoop(ltHandle util.ILifetimeHandle) {
 loop:
 	for {
 		select {
@@ -175,9 +175,9 @@ loop:
 		case mId := <-i.nackChan:
 			i.logger.Debugf("Input received Nack for message ID %v", *mId)
 			i.reader.Nack(mId)
-		case <-i.lt.Terminated():
+		case <-ltHandle.Terminated():
 			break loop
-		case <-i.lt.Killed():
+		case <-ltHandle.Killed():
 			break loop
 		}
 	}

@@ -61,15 +61,14 @@ func (r *SqsFifoReader) GetQueueVisibilityTimeout(ctx context.Context) (int, err
 	return r.client.GetQueueVisibilityTimeout(ctx)
 }
 
-// Start starts the reading and begins populating the message queue
-func (r *SqsFifoReader) Start() {
-	r.tracker.Start()
+// RegisterLoops registers the refresh loop with the application lifetime, so that it can be started with the other loops
+func (r *SqsFifoReader) RegisterLoops() {
+	r.tracker.RegisterLoops()
 
-	wg := r.lt.Register(3)
-	wg.Go(r.readLoop)
-	wg.Go(r.ackLoop)
-	wg.Go(r.nackLoop)
-	r.logger.Debug("Read, ack & nack loops started")
+	r.lt.Register(r.readLoop)
+	r.lt.Register(r.ackLoop)
+	r.lt.Register(r.nackLoop)
+	r.logger.Debug("Read, ack & nack loops registered")
 }
 
 // Next returns the next message available for processing
@@ -100,23 +99,23 @@ func (r *SqsFifoReader) Nack(id *string) {
 }
 
 // Reads messages from the queue if there's room in the buffer
-func (r *SqsFifoReader) readLoop() {
+func (r *SqsFifoReader) readLoop(ltHandle util.ILifetimeHandle) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 
 readLoop:
 	for {
 		select {
-		case <-r.lt.Terminated():
+		case <-ltHandle.Terminated():
 			r.logger.Debug("Read loop received graceful termination order - breaking loop")
 			break readLoop
-		case <-r.lt.Killed():
+		case <-ltHandle.Killed():
 			r.logger.Debug("Read loop received kill order - breaking loop")
 			break readLoop
 		case <-t.C:
-			r.read(r.lt.Ctx)
+			r.read(ltHandle.KillContext())
 		case <-r.readCond.WaitChan():
-			r.read(r.lt.Ctx)
+			r.read(ltHandle.KillContext())
 		}
 	}
 }
@@ -141,29 +140,29 @@ func (r *SqsFifoReader) read(ctx context.Context) {
 }
 
 // Acknowledges pending messages by deleting them from the queue and removing them from the tracker
-func (r *SqsFifoReader) ackLoop() {
+func (r *SqsFifoReader) ackLoop(ltHandle util.ILifetimeHandle) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 
 ackLoop:
 	for {
 		select {
-		case <-r.lt.Terminated():
+		case <-ltHandle.Terminated():
 			// Process pending acks first, then break out of the loop
 			r.logger.Debug("AckLoop received graceful termination order - processing pending then breaking loop")
-			if err := r.ack(r.lt.Ctx); err != nil {
+			if err := r.ack(ltHandle.KillContext()); err != nil {
 				r.logger.Debug("Ack loop received kill order before processing of pending acks could complete")
 			}
 			break ackLoop
-		case <-r.lt.Killed():
+		case <-ltHandle.Killed():
 			break ackLoop
 		case <-t.C:
-			if err := r.ack(r.lt.Ctx); err != nil {
+			if err := r.ack(ltHandle.KillContext()); err != nil {
 				r.logger.Debug("Ack loop received kill order - breaking loop")
 				break ackLoop
 			}
 		case <-r.ackCond.WaitChan():
-			if err := r.ack(r.lt.Ctx); err != nil {
+			if err := r.ack(ltHandle.KillContext()); err != nil {
 				r.logger.Debug("Ack loop received kill order - breaking loop")
 				break ackLoop
 			}
@@ -224,30 +223,30 @@ func (r *SqsFifoReader) ack(ctx context.Context) error {
 	return nil
 }
 
-func (r *SqsFifoReader) nackLoop() {
+func (r *SqsFifoReader) nackLoop(ltHandle util.ILifetimeHandle) {
 	t := time.NewTicker(time.Second)
 	defer t.Stop()
 
 nackLoop:
 	for {
 		select {
-		case <-r.lt.Terminated():
+		case <-ltHandle.Terminated():
 			// Process pending nacks first, then break out of the loop
 			r.logger.Debug("NackLoop received graceful termination order - processing pending then breaking loop")
-			if err := r.nack(r.lt.Ctx); err != nil {
+			if err := r.nack(ltHandle.KillContext()); err != nil {
 				r.logger.Debug("Nack loop received kill order before processing of pending nacks could complete")
 			}
 			break nackLoop
-		case <-r.lt.Killed():
+		case <-ltHandle.Killed():
 			r.logger.Debug("Nack loop received kill order - breaking loop")
 			break nackLoop
 		case <-t.C:
-			if err := r.nack(r.lt.Ctx); err != nil {
+			if err := r.nack(ltHandle.KillContext()); err != nil {
 				r.logger.Debug("Nack loop received kill order - breaking loop")
 				break nackLoop
 			}
 		case <-r.nackCond.WaitChan():
-			if err := r.nack(r.lt.Ctx); err != nil {
+			if err := r.nack(ltHandle.KillContext()); err != nil {
 				r.logger.Debug("Nack loop received kill order - breaking loop")
 				break nackLoop
 			}
@@ -265,7 +264,7 @@ func (r *SqsFifoReader) nack(ctx context.Context) error {
 	for e := r.pendingNack.Front(); e != nil; e = e.Next() {
 		id := e.Value.(*string)
 		if _, err := r.tracker.Peek(id); err != nil {
-			if ctxErr := r.lt.Ctx.Err(); ctxErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
 				return err
 			}
 
@@ -278,7 +277,7 @@ func (r *SqsFifoReader) nack(ctx context.Context) error {
 		ids = append(ids, id)
 		err := r.tracker.Nack(ctx, ids...)
 		if err != nil {
-			if ctxErr := r.lt.Ctx.Err(); ctxErr != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
 				return err
 			}
 
